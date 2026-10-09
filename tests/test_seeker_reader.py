@@ -23,6 +23,7 @@ class SeekerReaderTests(unittest.TestCase):
         self.actor_obj = self.ptr(m.unit_rows+8)
         m.pointer(self.obj+0x1D0,self.actor_obj)
         m.word(self.ptr(m.inventory+80)+28,4)
+        m.word(self.ptr(m.inventory+80)+16,1291)
         actor = m.record(1242,1,476)
         self.wield = m.component(0x3326420,48,72,96,24,actor,bytes(0x1D0))
         m.word(self.ptr(self.wield+96),1291)
@@ -108,3 +109,90 @@ class SeekerReaderTests(unittest.TestCase):
         self.memory.word(authored+15937304+12,0x800001)
         with self.assertRaises(Exception):
             self.reader.snapshot(self.reader,ticket)
+
+    def test_quick_capture_uses_owned_inventory_not_the_wielded_rifle(self):
+        self.memory.word(self.ptr(self.memory.inventory+80)+28,1)
+        self.memory.word(self.ptr(self.wield+96),1292)
+        self.assertIsNone(self.capture())
+        ticket = self.reader.capture(self.reader,True)
+        self.assertEqual(ticket[b'entity'],1291)
+        self.throw()
+        self.memory.word(self.ptr(self.memory.inventory+80)+16,0)
+        self.assertTrue(self.reader.snapshot(self.reader,ticket)[b'deployed'])
+
+    def test_quick_capture_never_adopts_a_detached_or_foreign_seeker(self):
+        self.throw()
+        with self.assertRaisesRegex(Exception,'held_seeker_changed'):
+            self.reader.capture(self.reader,True)
+        self.memory.pointer(self.obj+0x1D0,self.ptr(self.memory.unit_rows+24))
+        with self.assertRaisesRegex(Exception,'held_seeker_changed'):
+            self.reader.capture(self.reader,True)
+
+    def test_quick_throw_can_create_the_inventory_item_after_the_key_press(self):
+        inventory = self.ptr(self.memory.inventory+80)
+        self.memory.word(inventory+28,1)
+        self.memory.word(inventory+16,0)
+        self.assertIsNone(self.reader.capture(self.reader,True))
+        self.memory.word(inventory+16,1291)
+        ticket = self.reader.capture(self.reader,True)
+        self.assertEqual(ticket[b'entity'],1291)
+        self.throw()
+        self.memory.word(self.brain+8,4)
+        self.memory.word(inventory+16,0)
+        sample = self.reader.snapshot(self.reader,ticket)
+        self.assertTrue(sample[b'deployed'])
+        self.assertEqual(sample[b'motion'][b'enabled'],b'\1')
+
+    def test_only_verified_free_flight_states_are_deployed(self):
+        ticket = self.capture()
+        self.throw()
+        for state in (0,1,2,5,0xFFFFFFFF):
+            self.memory.word(self.brain+8,state)
+            self.assertFalse(self.reader.snapshot(self.reader,ticket)[b'deployed'])
+        for state in (3,4):
+            self.memory.word(self.brain+8,state)
+            self.assertTrue(self.reader.snapshot(self.reader,ticket)[b'deployed'])
+        self.memory.pointer(self.obj+0x1D0,self.actor_obj)
+        self.assertFalse(self.reader.snapshot(self.reader,ticket)[b'deployed'])
+
+    def test_visual_cleanup_requires_an_exploded_owned_seeker(self):
+        ticket = self.capture()
+        self.throw()
+        sample = self.reader.snapshot(self.reader,ticket)
+        self.assertFalse(sample[b'explosion_valid']())
+        self.memory.put(self.explosion_rows+36,b'\1')
+        self.assertTrue(sample[b'explosion_valid']())
+        self.memory.word(self.explosive+44,0)
+        self.assertFalse(sample[b'explosion_valid']())
+
+    def test_missing_quick_inventory_item_is_ignored(self):
+        self.memory.word(self.ptr(self.memory.inventory+80)+16,0)
+        self.assertIsNone(self.reader.capture(self.reader,True))
+
+    def test_aftermath_camera_survives_drone_component_destruction(self):
+        ticket = self.capture()
+        self.throw()
+        self.memory.word(self.root(0x3326740)+44,0)
+        self.memory.word(self.explosive+44,0)
+        registry = self.ptr(self.memory.engine+0x1A100F0)
+        self.memory.put(self.ptr(registry+0xA0)+2,b'\2')
+        camera = self.reader.camera_snapshot(self.reader,ticket)
+        self.assertTrue(camera[b'camera_valid']())
+        with self.assertRaises(Exception):
+            self.reader.snapshot(self.reader,ticket)
+
+    def test_aftermath_party_join_exits_but_same_actor_camera_can_restore(self):
+        ticket = self.capture()
+        camera = self.reader.camera_snapshot(self.reader,ticket)
+        self.memory.word(self.root(0x3326468)+136,2)
+        self.assertTrue(camera[b'camera_valid']())
+        with self.assertRaisesRegex(Exception,'solo_required'):
+            self.reader.camera_snapshot(self.reader,ticket)
+
+    def test_aftermath_actor_or_camera_replacement_invalidates_camera(self):
+        ticket = self.capture()
+        camera = self.reader.camera_snapshot(self.reader,ticket)
+        self.memory.word(self.root(0x346BF98)+15937304+12,0x800001)
+        self.assertFalse(camera[b'camera_valid']())
+        with self.assertRaises(Exception):
+            self.reader.camera_snapshot(self.reader,ticket)

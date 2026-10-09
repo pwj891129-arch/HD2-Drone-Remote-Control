@@ -102,6 +102,8 @@ function Engine.new(s, Flight, report, channel)
         assert(type(s.Quaternion) == 'table' and type(s.Quaternion.from_elements) == 'function',
             'quaternion_elements_api_unavailable')
         assert(type(U.teleport_local_rotation) == 'function', 'rotation_update_api_unavailable')
+        assert(snapshot.kind ~= 'seeker' or type(U.set_unit_visibility) == 'function',
+            'seeker_visibility_api_unavailable')
         assert(self:observe(snapshot).airborne, 'drone_not_airborne')
         assert(snapshot.movement and snapshot.movement.valid(), 'drone_movement_not_ready')
         self.node = snapshot.node_index
@@ -172,6 +174,18 @@ function Engine.new(s, Flight, report, channel)
         if s.Window.mouse_focus() == false then s.Window.set_mouse_focus(self.focus.mouse) end
         if s.Window.show_cursor() == false then s.Window.set_show_cursor(self.focus.cursor) end
         self.focus = nil
+        return true
+    end
+    function adapter:seeker_explosion(snapshot)
+        assert(snapshot.kind == 'seeker' and self.token == snapshot.token, 'seeker_visual_owner_changed')
+        -- A destroyed generation needs no hide call. Never hide an untriggered bomb.
+        if not snapshot.explosion_valid() then return false end
+        if not U.alive(self.drone) then return false end
+        assert(self.world == s.Application.main_world() and channel:unit_ref(self.drone) == snapshot.drone_unit,
+            'seeker_visual_owner_changed')
+        assert(snapshot.explosion_valid(), 'seeker_explosion_changed')
+        U.set_unit_visibility(self.drone,false)
+        note('exploded Seeker meshes hidden; native damage/effects/destruction untouched')
         return true
     end
     function adapter:hud(snapshot, distance, automatic, surface_ready)

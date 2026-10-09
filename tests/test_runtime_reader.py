@@ -642,6 +642,33 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
         self.memory.word(self.memory.buckets + 4, 0)
         self.assertFalse(keys[b'valid']())  # A changed aim-mode binding is not.
 
+    def test_optional_quick_throw_reads_configured_key_and_suppresses_it_during_control(self):
+        at = self.memory.buckets+9*328
+        self.memory.word(at,0x20015)
+        self.memory.word(at+4,1)
+        self.memory.word(at+8,(72 << 20) | 0xFF43)
+        self.memory.word(at+12,121)
+        keys = self.native.bindings(self.native)
+        self.assertEqual(keys[b'quick_throw'],72)  # Remapped H, not a fixed G.
+        entries = {item[1]:item for item in keys[b'input_entries'].values()}
+        self.assertIn(at+4,entries)
+        keys[b'inputs_suppressed'] = True
+        self.memory.word(at+4,0)
+        self.assertTrue(keys[b'valid']())
+        self.assertTrue(entries[at+4][3]())
+
+    def test_absent_unbound_or_unsupported_quick_throw_does_not_disable_backpack_controls(self):
+        self.assertIsNone(self.native.bindings(self.native)[b'quick_throw'])
+        at = self.memory.buckets+9*328
+        self.memory.word(at,0x20015)
+        self.assertIsNone(self.native.bindings(self.native)[b'quick_throw'])
+        self.memory.word(at+4,1)
+        self.memory.word(at+8,0x60FF41)  # Controller-only entry.
+        keys = self.native.bindings(self.native)
+        self.assertIsNone(keys[b'quick_throw'])
+        self.assertEqual(keys[b'backpack'],84)
+        self.assertTrue(keys[b'valid']())
+
     def test_input_gate_captures_gameplay_bindings_not_menu_bindings(self):
         at = self.memory.buckets + 9 * 328
         self.memory.word(at, 0x2000A)  # Reload, not one of the required drone keys.

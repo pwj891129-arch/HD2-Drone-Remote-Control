@@ -56,7 +56,7 @@ local Clock = (function()
 end)()
 local loader = rawget(_G,'CowboyBingusModLoader')
 if type(loader) ~= 'table' or loader.api ~= 1 or rawget(_G,'DroneRemoteControl') then return end
-local state = {version = '0.2.20',status = 'initializing',control_active = false,blocking_inputs = false,stopped = false}
+local state = {version = '0.2.22',status = 'initializing',control_active = false,blocking_inputs = false,stopped = false}
 rawset(_G,'DroneRemoteControl',state)
 local log
 if type(loader.open_log) == 'function' then
@@ -66,7 +66,7 @@ local last_report
 local function report(message)
     if message == last_report then return end
     last_report = message
-    local line = '[DroneRemoteControl 0.2.20] '..message
+    local line = '[DroneRemoteControl 0.2.22] '..message
     print(line)
     if log then pcall(function() log:write(line..'\n'); log:flush() end) end
 end
@@ -79,6 +79,7 @@ local function initialize()
     reader = Reader.new(channel,B,Flight)
     local seeker_reader = SeekerReader.new(reader,channel,B)
     function reader:seeker_snapshot(ticket) return seeker_reader:snapshot(ticket) end
+    function reader:seeker_camera(ticket) return seeker_reader:camera_snapshot(ticket) end
     cooperation = Cooperation.new(_G,state)
     options = Options.new(_G,channel,B,report)
     controller = Controller.new(channel,reader,Engine.new(s,Flight,report,channel),
@@ -110,6 +111,10 @@ my_update = function(...)
         end)
         if not ok then
             local stage = controller and controller.stage or 'initialize'
+            local preserve_seeker = stage == 'snapshot' and controller and controller.seeker and
+                not controller.active and not controller.session and not controller.pending and
+                not controller.pack_lease and not controller.input_lease and not controller.seeker_ticket and
+                not controller.pending_cleanup
             if stage == 'snapshot' and reader then stage = 'snapshot/'..tostring(reader.stage) end
             why = 'stage='..tostring(stage)..'; '..tostring(why)
             if controller and (controller.active or controller.session or controller.pack_lease or controller.input_lease or controller.pending or controller.seeker_ticket or
@@ -117,7 +122,8 @@ my_update = function(...)
                 controller:stop('refused:'..tostring(why))
             end
             if not controller then state.stopped = true end
-            if controller then controller:reset_inputs() end
+            -- An absent Guard Dog is normal for a Seeker loadout, not a lost key edge.
+            if controller then controller:reset_inputs(preserve_seeker) end
             state.status,state.control_active = 'refused',false
             if state.last_error ~= tostring(why) then
                 state.last_error = tostring(why); report('refused: '..tostring(why))
@@ -136,6 +142,7 @@ rawset(_G,'shutdown',function(...)
     if previous_shutdown then return previous_shutdown(...) end
 end)
 report('Private Guard Dog/solo prototype; five backpack families; aim-mode + backpack: recall, dock, deploy, control; backpack: cancel/exit')
-report('Solo G-50/G-60 Seeker: hold aim-mode + press attack, release attack for native throw; fresh attack or aim-mode detonates; 30s lifetime; no range limit')
+report('Solo G-50/G-60 Seeker: aim-mode + quick throw, or equipped throwable + aim-mode + attack; native throw unchanged; fresh attack or aim-mode detonates')
+report('Seeker: 30s lifetime; no range limit; explosion releases native AI and hides exploded meshes; camera alone holds for 0.7s')
 report('Nonphysical surface clearance: 1m; private native probes every 50ms; unavailable query holds flight')
 report('Seeker surface clearance: 0.5m; no impact-detonation trigger added')

@@ -292,6 +292,12 @@ sample.kind,sample.drone_name,sample.remaining='seeker','G-60 SEEKER',21.5
 sample.gun_unit,sample.gun_goid,sample.gun_engine_resource=sample.drone_unit,sample.drone_goid,sample.drone_engine_resource
 sample.pack_unit,sample.pack_parent_unit,sample.gun_parent_unit=nil,nil,nil
 sample.drone_parent_unit=nil
+local hidden,exploded=0,false
+sample.explosion_valid=function()return exploded and sample.unit_valid()end
+s.Unit.set_unit_visibility=function(unit,visible)
+    check(unit==drone and visible==false and exploded,'hide only the exact exploded Seeker meshes')
+    hidden=hidden+1
+end
 engine=make();engine:prepare(sample)
 check(engine.drone==engine.gun,'Seeker camera resolves the bomb itself, never a fabricated weapon')
 local previous_updates=updates
@@ -301,5 +307,17 @@ engine:hud(sample,1500,false,true)
 check(texts[#texts].str:find('TIME 21.5s') and texts[#texts].str:find('1500.0m') and
     not texts[#texts].str:find('/ 100m') and not texts[#texts].str:find('HEAT'),
     'Seeker HUD shows lifetime and distance without a signal-range or heat fiction')
+check(not engine:seeker_explosion(sample) and hidden==0,'live Seeker is never hidden before detonation')
+exploded=true
+check(engine:seeker_explosion(sample) and hidden==1,'exploded mesh is hidden without deleting the native unit')
+local saved_ref=drone.ref
+drone.ref=0x400020
+check(not pcall(engine.seeker_explosion,engine,sample) and hidden==1,'reused/foreign engine handle is never hidden')
+drone.ref=saved_ref
+sample.unit_valid=function()return false end
+check(not engine:seeker_explosion(sample) and hidden==1,'destroyed generation needs no visibility call')
+sample.unit_valid=function()return true end
+s.Unit.set_unit_visibility=nil
+check(not pcall(engine.prepare,make(),sample),'missing visibility API refuses before Seeker input takeover')
 engine:clear()
 return checks

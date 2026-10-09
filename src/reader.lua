@@ -215,7 +215,7 @@ function Reader.new(channel, B, Flight)
         local raw = self:raw(buckets,256*328)
         local wanted = {[0x2001A]='aim_mode', [0x20025]='backpack', [0x20011]='up',
             [0x2000C]='down', [0x20009]='fire', [0x20000]='left', [0x20001]='right',
-            [0x20002]='forward', [0x20003]='back'}
+            [0x20002]='forward', [0x20003]='back', [0x20015]='quick_throw'}
         local keys, token, pack_entries, input_entries, records = {}, {tostring(owner),tostring(buckets)}, {}, {}, {}
         local function owner_valid()
             return r:root(0x347CF18) == owner and r:ptr(owner+686800) == buckets and
@@ -227,7 +227,7 @@ function Reader.new(channel, B, Flight)
             if name or player_action then
                 if name then assert(not keys[name], 'binding_duplicate') end
                 local count = B.word(raw,at+4)
-                assert(count <= 16 and (not name or count > 0), 'binding_count')
+                assert(count <= 16 and (not name or name == 'quick_throw' or count > 0), 'binding_count')
                 local record = {at = buckets+at, raw = raw:sub(at+1,at+8+count*20), pack = name == 'backpack'}
                 records[#records+1] = record
                 if not record.pack and count > 0 then
@@ -257,11 +257,16 @@ function Reader.new(channel, B, Flight)
                         if vk and not selected then selected = vk end
                     end
                 end
-                if name then assert(selected, 'binding_unsupported_'..name); keys[name] = selected end
+                if name then
+                    assert(selected or name == 'quick_throw', 'binding_unsupported_'..name)
+                    keys[name] = selected
+                end
                 token[#token+1] = tostring(code)..':'..record.raw
             end
         end
-        for _, name in pairs(wanted) do assert(keys[name], 'binding_missing_'..name) end
+        for _, name in pairs(wanted) do
+            if name ~= 'quick_throw' then assert(keys[name], 'binding_missing_'..name) end
+        end
         function keys.valid()
             local ok, result = pcall(function()
                 if not owner_valid() then return false end

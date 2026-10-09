@@ -74,7 +74,7 @@ def main():
         files['Source/validation.json'] = (json.dumps(report, indent=2) + '\n').encode('ascii')
         files['SHA256SUMS.txt'] = ''.join(hashlib.sha256(value).hexdigest() + '  ' + name + '\n'
                                          for name, value in sorted(files.items())).encode('ascii')
-        path = releases / f'Drone-Remote-Control-0.2.20-private-test-{language}.zip'
+        path = releases / f'Drone-Remote-Control-0.2.22-private-test-{language}.zip'
         with zipfile.ZipFile(path, 'w') as output:
             for name, value in sorted(files.items()):
                 entry = zipfile.ZipInfo(name, (2026, 10, 9, 0, 0, 0))

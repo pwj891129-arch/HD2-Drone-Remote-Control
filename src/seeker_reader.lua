@@ -16,21 +16,30 @@ function SeekerReader.new(r, channel, B)
         local entity,unit = B.word(identity,8),B.word(identity,12)
         assert(entity > 0 and entity < 0xFFFFFF00 and B.word(identity,16) == goid, 'actor_identity')
         local _,unit_valid = r:unit_object(unit)
-        local function valid()
+        local function owned()
             return unit_valid() and r:root(0x3326468) == players and r:root(0x346BF98) == authored and
-                r:word(players+132) == 1 and r:word(players+136) == 1 and
                 r:word(players+936) == goid and r:raw(at,24) == identity
         end
+        local function valid()
+            return owned() and r:word(players+132) == 1 and r:word(players+136) == 1
+        end
         assert(valid(), 'actor_changed')
-        return {entity = entity,unit = unit,identity = identity,valid = valid}
+        return {entity = entity,unit = unit,identity = identity,valid = valid,owned = owned}
     end
-    function self:capture()
+    function self:capture(quick_throw)
         local a = actor()
         local inventory = r:component(0x3326738,40,64,20,a.entity,80,48,512)
-        if r:word(inventory.address+28) ~= 4 then return nil end
-        local wield = r:component(0x3326420,48,72,24,a.entity,96,0x1D0,512)
-        assert(wield.unit == a.unit and wield.descriptor == a.identity, 'held_owner_changed')
-        local entity = r:word(wield.address)
+        assert(inventory.unit == a.unit and inventory.descriptor == a.identity, 'held_owner_changed')
+        if not quick_throw and r:word(inventory.address+28) ~= 4 then return nil end
+        local wield,source
+        if quick_throw then
+            source = inventory.address+16
+        else
+            wield = r:component(0x3326420,48,72,24,a.entity,96,0x1D0,512)
+            assert(wield.unit == a.unit and wield.descriptor == a.identity, 'held_owner_changed')
+            source = wield.address
+        end
+        local entity = r:word(source)
         if entity == 0 or entity >= 0xFFFFFF00 then return nil end
         local ok,brain = pcall(r.component,r,0x3326740,64,88,44,entity,96,0x1F8,4096)
         if not ok then assert(brain == 'component_absent',brain); return nil end
@@ -38,10 +47,30 @@ function SeekerReader.new(r, channel, B)
         if not SeekerReader.resources[resource] then return nil end
         local parent,parent_valid = r:parent_unit(brain.unit)
         assert(parent == a.unit and parent_valid() and r:word(brain.address) == 4 and
-            inventory.valid() and wield.valid() and brain.valid() and a.valid() and
-            r:word(inventory.address+28) == 4 and r:word(wield.address) == entity, 'held_seeker_changed')
+            inventory.valid() and (not wield or wield.valid()) and brain.valid() and a.valid() and
+            (quick_throw or r:word(inventory.address+28) == 4) and r:word(source) == entity, 'held_seeker_changed')
         return {entity = entity,unit = brain.unit,identity = brain.descriptor,
             actor_identity = a.identity,resource = resource,name = SeekerReader.resources[resource]}
+    end
+    -- Camera ownership outlives the exploded unit. Never resolve a drone here.
+    function self:camera_snapshot(ticket)
+        local a = actor()
+        assert(a.identity == ticket.actor_identity, 'seeker_actor_changed')
+        local camera = r:root(0x346D560)
+        local first,next_row = r:word(camera+0x1F8),r:word(camera+0x1FC)
+        assert(first < 32 and next_row < 32 and first ~= next_row, 'camera_queue')
+        local row = camera+0x200+((next_row+31)%32)*0xE8
+        local identity = r:raw(row+4,12)
+        assert(B.word(identity,0) == a.entity and B.word(identity,4) == a.unit, 'camera_not_player')
+        local result = {camera = camera,camera_row = row}
+        function result.camera_valid()
+            local ok,valid = pcall(function()
+                return a.owned() and r:root(0x346D560) == camera and r:raw(row+4,12) == identity
+            end)
+            return ok and valid
+        end
+        assert(result.camera_valid(), 'camera_changed')
+        return result
     end
     function self:snapshot(ticket)
         assert(type(ticket) == 'table' and SeekerReader.resources[ticket.resource], 'seeker_ticket_required')
@@ -70,21 +99,17 @@ function SeekerReader.new(r, channel, B)
         local resource,resource_valid = r:engine_resource(ticket.unit)
         local parent,parent_valid = r:parent_unit(ticket.unit)
         assert(parent == nil or parent == a.unit, 'seeker_foreign_parent')
-        local camera = r:root(0x346D560)
-        local first,next_row = r:word(camera+0x1F8),r:word(camera+0x1FC)
-        assert(first < 32 and next_row < 32 and first ~= next_row, 'camera_queue')
-        local row = camera+0x200+((next_row+31)%32)*0xE8
-        local camera_identity = r:raw(row+4,12)
-        assert(B.word(camera_identity,0) == a.entity and B.word(camera_identity,4) == a.unit, 'camera_not_player')
+        local view = self:camera_snapshot(ticket)
         local result = {kind = 'seeker',ticket = ticket,actor_unit = a.unit,actor_position = r:position(a.unit),
             drone_unit = ticket.unit,drone_entity = ticket.entity,drone_goid = brain.goid,
             drone_position = r:position(ticket.unit),drone_parent_unit = parent,drone_engine_resource = resource,
             gun_unit = ticket.unit,gun_goid = brain.goid,gun_engine_resource = resource,
             node_index = r:node_index(),brain = brain,motion = motion,movement = movement,
-            camera = camera,camera_row = row,drone_name = ticket.name,behavior_kind = 4,
+            camera = view.camera,camera_row = view.camera_row,drone_name = ticket.name,behavior_kind = 4,
             explosive = explosive,detonation_manager = explosive.root,
             ownership_key = ticket.actor_identity..ticket.identity..resource,
-            deployed = parent == nil and r:word(brain.address+8) == 3,
+            -- Fast throws can pass straight from ballistic release (2) to seek (4).
+            deployed = parent == nil and (r:word(brain.address+8) == 3 or r:word(brain.address+8) == 4),
             detonating = r:raw(explosive.address+36,1) ~= '\0'}
         result.token = result.ownership_key..tostring(brain.address)
         function result.unit_valid()
@@ -95,12 +120,14 @@ function SeekerReader.new(r, channel, B)
             return ok and valid
         end
         function result.graph_valid() return parent_valid() end
-        function result.camera_valid()
-            return r:root(0x346D560) == camera and r:raw(row+4,12) == camera_identity
-        end
+        result.camera_valid = view.camera_valid
         function result.detonation_valid()
             return result.unit_valid() and result.graph_valid() and parent == nil and
                 r:raw(explosive.address+36,1) == '\0'
+        end
+        function result.explosion_valid()
+            return result.unit_valid() and result.graph_valid() and parent == nil and
+                r:raw(explosive.address+36,1) ~= '\0'
         end
         result.fire_valid = result.unit_valid
         assert(result.unit_valid() and result.graph_valid() and result.camera_valid(), 'seeker_snapshot_changed')

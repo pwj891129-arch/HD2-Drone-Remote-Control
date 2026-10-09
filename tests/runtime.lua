@@ -9,7 +9,7 @@ local function fixture(previous)
         if self.fail then error(self.fail) end
     end
     function controller:stop() stops=stops+1;self.active=false;self.session=nil end
-    function controller:reset_inputs() resets=resets+1 end
+    function controller:reset_inputs(preserve) resets=resets+1;self.last_preserve=preserve end
     local env = setmetatable({update=previous,shutdown=function(...)return...end,
         CowboyBingusModLoader={api=1},stingray={Unit={},World={},Window={},Mouse={},Vector3={},Quaternion={}},
         print=function()end,jit={off=function()end},
@@ -52,9 +52,11 @@ controller.fail='map_invalid';time(1.04);env.update()
 local stops,resets=counts()
 check(stops==0 and resets==1 and env.DroneRemoteControl.status=='refused','idle scene error rearms input without native cleanup')
 check(env.DroneRemoteControl.last_error:find('stage=snapshot/backpack'),'snapshot stage recorded')
+check(controller.last_preserve==true,'passive backpack absence preserves initialized Seeker edges')
 controller.pending={phase='recalling'};controller.fail='lost_rover';time(1.05);env.update()
 stops,resets=counts()
 check(stops==1 and resets==2,'preparation error performs cleanup even before control is active')
+check(not controller.last_preserve,'pending control failures never preserve Seeker arming')
 controller.pending=nil
 controller.fail=nil;time(1.06);env.update()
 check(env.DroneRemoteControl.last_error==nil and not env.DroneRemoteControl.stopped,'temporary error recovers next frame')

@@ -2,9 +2,9 @@ local Controller = {}
 function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, report, cooperation, aim, options, pose, avoidance)
     local c = {active = false, status = 'idle', hotkey = Hotkey.new(), pending_cleanup = false}
     local zero = B.u32(0)
-    function c:reset_inputs()
+    function c:reset_inputs(preserve_seeker)
         self.hotkey:step(nil)
-        if self.seeker and not self.seeker_ticket then self.seeker:reset() end
+        if self.seeker and not self.seeker_ticket and not preserve_seeker then self.seeker:reset() end
         if not self.pack_lease and not self.input_lease then self.keys = nil end
     end
     function c:stop(reason)
@@ -12,6 +12,7 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         if avoidance then avoidance:clear() end
         self.pending_cleanup = false
         self.pending = nil
+        self.aftermath = nil
         self.seeker_ticket = nil
         if self.seeker then self.seeker:reset() end
         if self.pulse then
@@ -235,10 +236,29 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         lease:claim(snapshot.camera_row,'\4\0','\0\0',snapshot.camera_valid)
         if current then report('actor camera request refreshed') end
     end
+    function c:hold_seeker_camera(snapshot,reason,duration)
+        local session = assert(self.session,'seeker_camera_session_missing')
+        assert(self.active and session.context.kind == 'seeker' and snapshot.ticket == self.seeker_ticket and
+            session.camera_lease and session.camera_position and session.camera_rotation, 'seeker_camera_hold_not_ready')
+        local raw,position = session.camera_position.value,{}
+        for axis=1,3 do position[axis] = channel:float(raw,(axis-1)*4) end
+        -- Resume native explosion cleanup now; only the camera survives the bomb.
+        if pose then pose:clear() end
+        assert(session.lease:release(), 'seeker_explosion_release_pending')
+        session.behavior,session.motion,session.movement = nil,nil,nil
+        engine:seeker_explosion(snapshot)
+        self.aftermath = {ticket = snapshot.ticket,reason = reason,until_time = channel:now()+duration,
+            position = position,raw_position = raw,rotation = session.camera_rotation.value}
+        self.active,self.status = false,'seeker_explosion_view'
+        if avoidance then avoidance:clear() end
+        report('seeker explosion view: '..reason..'; camera hold='..duration..'s')
+    end
     function c:tick(dt)
         if self.pending_cleanup then self:stop('retry_cleanup'); return end
         if not channel:foreground() then
-            if self.active or self.pending or self.pulse or self.pack_lease or self.input_lease then self:stop('focus_lost') end
+            if self.active or self.pending or self.pulse or self.pack_lease or self.input_lease or self.seeker_ticket or
+                self.aftermath or self.seeker and self.seeker.quick_wait then self:stop('focus_lost') end
+            if self.seeker then self.seeker:reset() end
             self.hotkey:step(nil); self.keys = nil; return
         end
         if self.pulse and channel:now() >= self.pulse.until_time then
@@ -257,11 +277,23 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         self.stage = 'bindings'
         if not self.pack_lease and not self.input_lease then
             self.keys = reader:bindings()
-            local binding = 'aim_mode='..self.keys.aim_mode..'; backpack='..self.keys.backpack
+            local binding = 'aim_mode='..self.keys.aim_mode..'; backpack='..self.keys.backpack..
+                '; quick_throw='..tostring(self.keys.quick_throw)
             if binding ~= self.last_binding then self.last_binding = binding; report('bindings: '..binding) end
         end
         local keys = assert(self.keys,'bindings_unavailable')
         assert(keys.valid(), 'bindings_changed')
+        if self.aftermath then
+            self.stage = 'seeker/explosion_view'
+            local view = self.aftermath
+            if channel:now() >= view.until_time then self:stop(view.reason); return end
+            local snapshot = reader:seeker_camera(view.ticket)
+            self:camera_tick(snapshot,view.position)
+            self.session.camera_lease:set(self.session.camera_position,view.raw_position)
+            self.session.camera_lease:set(self.session.camera_rotation,view.rotation)
+            channel:mouse_delta()
+            return
+        end
         local snapshot
         if self.seeker and not self.pending and (not self.session or self.session.context.kind == 'seeker') then
             local consumed

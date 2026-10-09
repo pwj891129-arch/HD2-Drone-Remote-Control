@@ -2,8 +2,9 @@ local Hotkey = ...
 local h = Hotkey.new()
 local checks = 0
 local function check(value,message) assert(value,message);checks=checks+1 end
-local function step(q,fire,active,held,token)
-    return h:step({aim_mode_down=q,fire_down=fire,active=active,held=held,binding_token=token or 'game-bindings'})
+local function step(q,fire,active,held,token,quick)
+    return h:step({aim_mode_down=q,fire_down=fire,active=active,held=held,
+        binding_token=token or 'game-bindings',quick_down=quick})
 end
 check(step(true,true,false,true)==nil,'already-held keys on load never arm')
 check(step(false,false,false,true)==nil,'release rearms')
@@ -24,4 +25,19 @@ check(step(true,true,false,false)==nil,'other weapons cannot arm the Seeker path
 check(h:step({fire_down=true})==nil,'malformed input is refused')
 h:step(nil)
 check(step(true,true,false,true)==nil,'scene reset requires a new input edge')
+step(false,false,false,false,nil,false)
+check(step(false,false,false,false,nil,true)==nil,'quick throw without Q stays native')
+step(true,false,false,false,nil,false)
+check(step(true,false,false,false,nil,true)=='quick_arm','Q plus a fresh quick throw works without slot 4')
+check(step(true,false,false,false,nil,true)==nil,'held Q+G does not arm twice')
+check(step(true,false,true,false,nil,false)==nil,'quick throw release is not a detonation')
+check(step(true,false,true,false,nil,true)==nil,'G is not the remote detonation button')
+step(false,false,true,false,nil,false)
+check(step(true,false,true,false,nil,false)=='detonate','fresh Q still detonates after a quick throw')
+h:step(nil)
+check(step(true,false,false,false,nil,true)==nil,'keys held across reset do not quick-arm')
+step(false,false,false,true,nil,false)
+check(step(true,true,false,true,nil,true)=='quick_arm','quick throw wins over simultaneous arm inputs')
+check(h:step({binding_token='x',fire_down=false,aim_mode_down=true,quick_down=1})==nil,
+    'invalid quick input is rejected')
 return checks

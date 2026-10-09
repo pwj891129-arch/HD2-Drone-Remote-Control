@@ -139,7 +139,7 @@ local function fixture(globals,state,aim,options,avoidance)
         drone_name='ROVER',behavior_kind=190,feed='heat',exhausted=false,
         fire_valid=function() return true end,camera_valid=function() return true end,
         unit_valid=function() return true end,docked=false}
-    local keys = {aim_mode=70,backpack=84,fire=1,forward=87,back=83,left=65,right=68,up=32,down=17,
+    local keys = {aim_mode=70,backpack=84,fire=1,quick_throw=71,forward=87,back=83,left=65,right=68,up=32,down=17,
         binding_token='bindings',pack_entries={{2000,'KEY'}},
         input_entries={{2100,'MOVE'},{2200,'FIRE'},{2300,'VIEW'}},valid=function() return true end}
     local reader = {}
@@ -184,6 +184,12 @@ local function fixture(globals,state,aim,options,avoidance)
     end
     function engine:capture_input() end
     function engine:clear() restored=restored+1 end
+    function engine:seeker_explosion(sample)
+        check(sample.kind=='seeker' and sample.detonating,'visual cleanup follows an actual detonation')
+        check(memory[1000]==B.u32(4) and memory[1500]=='\1',
+            'native behavior and Boids resume before explosion view')
+        self.hidden=(self.hidden or 0)+1
+    end
     function engine:move(_,position,rotation,_,automatic)
         check(memory[1000]==B.u32(0) and memory[1500]=='\0','both AI and autonomous flight paused before movement')
         check(memory[3000]=='\1' and memory[3001]=='\0','actor rotation flags untouched during flight/fire')
@@ -685,36 +691,50 @@ local function seeker_fixture()
     sample.deployed,sample.docked = false,false
     sample.heat,sample.feed,sample.targeting = nil,nil,nil
     sample.ticket = {identity='held-original',actor_identity='local-owner',name='G-60 SEEKER'}
+    sample.equipped,sample.available = true,true
+    sample.actor_valid,sample.camera_owned = true,true
     memory[1000]=B.u32(4)
+    memory[1300]=floats({0,0,0,1})
     sample.detonation_valid = function() return sample.deployed and not sample.detonating and sample.unit_valid() end
     local observer = {}
-    function observer:capture() return not sample.deployed and sample.ticket or nil end
+    function observer:capture(quick)
+        return sample.available and not sample.deployed and (quick or sample.equipped) and sample.ticket or nil
+    end
     function observer:snapshot(ticket)
         check(ticket==sample.ticket,'only the exact held throwable is tracked')
+        self.drone_reads=(self.drone_reads or 0)+1
         assert(sample.unit_valid(),'solo_required')
         return sample
     end
     function reader:seeker_snapshot(ticket) return observer:snapshot(ticket) end
+    function reader:seeker_camera(ticket)
+        check(ticket==sample.ticket,'aftermath retains exact actor ticket')
+        assert(sample.actor_valid,'seeker_actor_changed')
+        return {camera=sample.camera,camera_row=sample.camera_row,
+            camera_valid=function() return sample.actor_valid and sample.camera_owned end}
+    end
     local detonations = 0
     function channel:detonate(context)
         assert(context==sample and context.detonation_valid(),'detonation ownership')
         detonations=detonations+1
+        sample.detonating=true
     end
     c.seeker=SeekerControl.new(observer,channel,SeekerHotkey,function() end)
-    local function launch()
+    local function launch(quick)
+        if quick then sample.equipped=false end
         c:tick(0.02)
         pressed[70]=true;c:tick(0.02)
-        pressed[1]=true;c:tick(0.02)
+        pressed[quick and 71 or 1]=true;c:tick(0.02)
         check(c.seeker_ticket and not c.active and not c.input_lease,'press reserves native throw, never takes over a held bomb')
         check(memory[1000]==B.u32(4) and memory[2100]=='MOVE' and #channel.commands==0,
             'held Q+attack never modifies AI, input or emits synthetic throw')
-        pressed[1]=false;c:tick(0.02)
+        pressed[quick and 71 or 1]=false;c:tick(0.02)
         check(not c.active,'release alone does not fake deployment')
         sample.deployed=true;c:tick(0.02)
         check(c.active and memory[1000]==B.u32(0) and memory[2100]==B.u32(0),'actual native detach starts control')
         check(detonations==0 and #emitted==0,'throw attack release is not detonation or native gun fire')
     end
-    return c,pressed,sample,engine,launch,function() return detonations end
+    return c,pressed,sample,engine,launch,function() return detonations end,observer,reader
 end
 for _,button in ipairs({1,70}) do
     local c,pressed,sample,engine,launch,count=seeker_fixture()
@@ -724,16 +744,28 @@ for _,button in ipairs({1,70}) do
     check(c.active and engine.moved==1,'seekers have no 100m signal limit')
     pressed[70]=false;c:tick(0.02)
     pressed[button]=true;c:tick(0.02)
-    check(not c.active and count()==1,'fresh attack or Q detonates exactly once')
-    check(memory[1000]==B.u32(4) and memory[1100]=='\4\0' and memory[2100]=='MOVE',
-        'detonation restores native behavior, actor camera and movement')
+    check(not c.active and c.aftermath and count()==1,'fresh attack or Q detonates exactly once and begins camera hold')
+    local position,rotation,moves=memory[1284],memory[1300],engine.moved
+    check(memory[1100]=='\0\0' and memory[2100]==B.u32(0),'explosion keeps camera and gameplay input captured')
+    check(memory[1000]==B.u32(4) and memory[1500]=='\1' and memory[1600]==sample.movement.original and engine.hidden==1,
+        'exploded body no longer retains AI/movement overrides during the 0.7s camera hold')
+    sample.unit_valid=function() return false end
+    sample.brain.invalid,sample.motion.invalid,sample.movement.invalid=true,true,true
+    pressed[87]=true;channel.mouse_x=200;c:tick(0.69)
+    check(c.aftermath and count()==1 and memory[1284]==position and memory[1300]==rotation and engine.moved==moves,
+        'destroyed drone and new movement/fire inputs do not move the held camera or re-detonate')
+    c:tick(0.011);channel.mouse_x=0
+    check(not c.aftermath and not c.session,'camera returns after 0.7 seconds despite destroyed drone')
+    check(memory[1100]=='\4\0' and memory[2100]=='MOVE','aftermath restores actor camera and movement')
     check(#channel.commands==0,'detonation never sends backpack or throw input')
     c:tick(0.02)
     check(count()==1,'held detonation button cannot repeat')
 end
 local c,pressed,sample,engine,launch,count=seeker_fixture()
 launch();c:tick(30.01)
-check(not c.active and count()==1 and c.status=='seeker_time_expired','lifetime expires through original explosion path')
+check(not c.active and c.aftermath and count()==1,'lifetime expires through original explosion path with camera hold')
+c:tick(0.701)
+check(c.status=='seeker_time_expired' and not c.session,'timeout returns camera after hold')
 c,pressed,sample,engine,launch,count=seeker_fixture()
 launch();sample.unit_valid=function() return false end
 check(not pcall(c.tick,c,0.02),'party join refuses another control frame')
@@ -742,9 +774,123 @@ check(not c.active and count()==0 and memory[2100]=='MOVE' and memory[1100]=='\4
     'party join returns inputs without detonating a now-multiplayer throwable')
 c,pressed,sample,engine,launch,count=seeker_fixture()
 launch();sample.detonating=true;c:tick(0.02)
-check(not c.active and count()==0,'native explosion exits without repeated native invocation')
+check(not c.active and c.aftermath and count()==0,'observed native explosion holds view without repeated invocation')
+c:tick(0.701)
+check(not c.session and count()==0,'native explosion also restores after the camera delay')
 c,pressed,sample,engine,launch,count=seeker_fixture()
 c:tick(0.02);pressed[70],pressed[1]=true,true;c:tick(0.02);c:tick(8.01)
 check(not c.active and not c.seeker_ticket and count()==0 and memory[2100]=='MOVE',
     'uncompleted throw times out without stealing focus or exploding a held grenade')
+for _,exit in ipairs({'focus','actor','camera','bindings','shutdown'}) do
+    c,pressed,sample,engine,launch,count=seeker_fixture()
+    launch();pressed[1]=true;c:tick(0.02)
+    check(c.aftermath,'exit test starts in explosion view '..exit)
+    if exit=='focus' then
+        function channel:foreground() return false end
+        c:tick(0.02)
+    elseif exit=='shutdown' then c:stop('shutdown')
+    else
+        if exit=='actor' then sample.actor_valid=false
+        elseif exit=='camera' then sample.camera_owned=false
+        else c.keys.valid=function() return false end end
+        check(not pcall(c.tick,c,0.02),'unsafe aftermath is refused '..exit)
+        c:stop('refused:'..exit)
+    end
+    check(not c.aftermath and not c.session and memory[2100]=='MOVE' and count()==1,
+        'unsafe or explicit exit restores immediately without another explosion '..exit)
+end
+c,pressed,sample,engine,launch,count=seeker_fixture()
+launch();c:tick(0.02);pressed[1]=true;c:tick(0.02)
+local position,rotation=memory[1284],memory[1300]
+sample.camera_row=31000
+memory[31000],memory[31184],memory[31200]='\4\0','NEW_POS','NEW_ROT'
+c:tick(0.02)
+check(c.aftermath and memory[1100]=='\4\0' and memory[31000]=='\0\0' and
+    memory[31184]==position and memory[31200]==rotation,'new actor request preserves frozen explosion view')
+c:tick(0.681)
+check(not c.session and memory[31000]=='\4\0' and memory[31184]=='NEW_POS',
+    'new camera row is restored at the original deadline')
+c,pressed,sample,engine,launch,count=seeker_fixture()
+launch(true);c:tick(0.02)
+check(c.active and not c.pending and count()==0 and #channel.commands==0,
+    'Q plus mapped quick throw starts control without slot 4 or synthetic input')
+pressed[70]=false;c:tick(0.02);pressed[70]=true;c:tick(0.02)
+check(c.aftermath and count()==1,'fresh Q detonates a quick-thrown seeker')
+c:tick(0.701)
+check(not c.session and memory[2100]=='MOVE','quick-thrown seeker restores after the same 0.7s hold')
+c,pressed,sample,engine,launch,count=seeker_fixture()
+sample.available,sample.equipped=false,false
+c:tick(0.02);pressed[70],pressed[71]=true,true;c:tick(0.02)
+check(c.seeker.quick_wait and not c.input_lease,'quick throw waits for an owned inventory item without capturing inputs')
+c:tick(0.1);sample.available=true;c:tick(0.02)
+check(c.seeker_ticket and not c.active,'late native held-object creation is captured while attached to this actor')
+sample.deployed=true;c:tick(0.02)
+check(not c.active,'native throw key must be released before input takeover')
+pressed[71]=false;c:tick(0.02)
+check(c.active and count()==0,'released quick-throw key starts the exact deployed ticket')
+c:stop('quick_test_done')
+c,pressed,sample,engine,launch,count=seeker_fixture()
+sample.equipped=false
+c:tick(0.02);pressed[70]=true;c:tick(0.02)
+check(c.seeker.quick_candidate==sample.ticket,'Q alone caches only the exact attached inventory item')
+sample.deployed=true;pressed[71]=true;c:tick(0.02)
+check(c.seeker_ticket==sample.ticket and not c.active,'instant native detach still follows the pre-press ticket')
+pressed[71]=false;c:tick(0.02)
+check(c.active and count()==0 and #channel.commands==0,'fast Q+G takeover never guesses among flying drones')
+c:stop('instant_throw_test_done')
+local observer
+c,pressed,sample,engine,launch,count,observer=seeker_fixture()
+local capture=observer.capture
+function observer:capture(quick)
+    if quick then error('quick_inventory_not_ready') end
+    return capture(self,quick)
+end
+launch()
+check(c.active and not c.seeker.quick_candidate,'failed optional quick-cache does not block the original equipped route')
+c:stop('optional_cache_test_done')
+for _,exit in ipairs({'timeout','focus'}) do
+    c,pressed,sample,engine,launch,count=seeker_fixture()
+    sample.available,sample.equipped=false,false
+    c:tick(0.02);pressed[70],pressed[71]=true,true;c:tick(0.02)
+    if exit=='focus' then function channel:foreground() return false end end
+    c:tick(exit=='timeout' and 3.01 or 0.02)
+    check(not c.seeker_ticket and not c.seeker.quick_wait and not c.input_lease and count()==0 and #channel.commands==0,
+        'quick throw '..exit..' cancels without input, camera or explosion calls')
+end
+c,pressed,sample,engine,launch,count=seeker_fixture()
+sample.available,sample.equipped=false,false
+c:tick(0.02);pressed[70],pressed[71]=true,true;c:tick(0.02)
+sample.available=true;c:tick(3.01)
+check(not c.seeker_ticket and count()==0 and c.status=='seeker_quick_capture_timeout',
+    'a held object appearing after the quick-capture deadline is never adopted')
+c,pressed,sample,engine,launch,count=seeker_fixture()
+sample.equipped=false
+c:tick(0.02);pressed[70]=true;c:tick(0.02)
+check(c.seeker.quick_candidate,'focus test starts with an owned pre-throw candidate')
+function channel:foreground() return false end
+c:tick(0.02)
+check(not c.seeker.quick_candidate,'focus loss drops idle pre-throw candidates too')
+function channel:foreground() return true end
+pressed[71]=true;c:tick(0.02)
+check(not c.seeker_ticket and not c.seeker.quick_wait,'held Q+G on focus return does not arm a throw')
+local reader
+c,pressed,sample,engine,launch,count,observer,reader=seeker_fixture()
+sample.available,sample.equipped=false,false
+function reader:snapshot() error('guard_dog_required') end
+local function no_backpack_tick()
+    check(not pcall(c.tick,c,0.02),'missing backpack is a passive read failure')
+    c:reset_inputs(true)
+end
+-- A rifle-only loadout must still retain Q/G edges across normal backpack absence.
+no_backpack_tick();pressed[70]=true;no_backpack_tick()
+check(c.seeker.hotkey.token~=nil and c.seeker.hotkey.q,'passive reset retains Q history')
+pressed[71]=true;c:tick(0.02)
+check(c.seeker.quick_wait,'Q+G edge survives a passive backpack failure reset')
+c:tick(1.1)
+check(c.seeker.quick_wait,'quick throw tolerates creation after one second')
+sample.available=true;c:tick(0.02)
+check(c.seeker_ticket==sample.ticket and not c.input_lease,'late attached creation is captured before control')
+sample.deployed=true;pressed[71]=false;c:tick(0.02)
+check(c.active and count()==0,'late quick creation enters after native deployment without synthetic input')
+c:stop('late_quick_creation_test_done')
 return checks

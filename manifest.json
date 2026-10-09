@@ -1,12 +1,12 @@
 {
   "Version": 1,
   "Guid": "73c9cb24-d2ee-4bd1-818c-a07a570885a7",
-  "Name": "Drone Remote Control 0.2.20 - Private Prototype",
-  "Description": "0.2.20 - Connects G-50/G-60 Seeker control. Equip the throwable, hold Aim Mode Switch (Q in the current setup), press and release attack to perform the game's native throw. Takes over only the same held entity after deployment; never emits a synthetic throw. Fresh attack or Aim Mode Switch, or 30 seconds after deployment confirmation, requests the original explosion. No return or range limit; nonphysical 0.5m surface clearance and no added impact-detonation trigger. Keeps the five Guard Dog backpack families. Both modes are solo only and exit on a party join. Requires Bingus Shared Loader API 1. Apply after fully exiting the game and restart. G-60 connections and explosion code guards were checked read-only; actual Seeker camera, movement, detonation and surface-avoidance stability still need in-game testing.",
+  "Name": "Drone Remote Control 0.2.22 - Private Prototype",
+  "Description": "0.2.22 - Fixes Q+Quick Throw arming being reset by an absent/unsupported Guard Dog backpack. Waits up to 3s for the actor's attached Seeker and accepts observed free-flight states 3 and 4 with native motion active. No synthetic throw or adoption of nearby flying drones. On detonation, immediately releases AI/movement overrides and hides meshes only on the exact exploded unit; native damage/effects/destruction remain unchanged. Keeps only the last camera pose for 0.7s, then restores player view/input. Solo only; five Guard Dog families and equipped Q+Attack retained. Requires Bingus Shared Loader API 1. Fully exit, replace, deploy and restart. Fixes passed offline tests; in-game confirmation is pending.",
   "Options": [
     {
       "Name": "Backpack and Seeker Control - Solo Private Test",
-      "Description": "Backpack: hold Aim Mode Switch and press Backpack Function, then release both; Backpack cancels or exits. Range 100m; overheating or empty ammo exits. Seeker: equip the throwable, hold Aim Mode Switch, press attack and release it for the native throw. Fresh attack or Aim Mode Switch detonates during control. No range limit; lifetime 30s. Uses mapped movement, Dodge and Crouch keys. Both modes exit on a party join. In-game MODS > Drone Remote Control > Auto Aim applies only to backpack drones. Apply and restart. Log: DroneRemoteControl.log.",
+      "Description": "Backpack: hold Aim Mode Switch and press Backpack Function, then release both; Backpack exits. Range 100m; overheating or empty ammo exits. Seeker: hold Aim Mode Switch and use mapped Quick Throw; alternatively equip slot 4 and use Q+Attack. Release the throw/attack key for native deployment. Fresh Attack or Aim Mode Switch requests detonation, followed by a 0.7s frozen camera view. No range limit; lifetime 30s. Mapped movement, Dodge and Crouch are used. Both modes exit on a party join. In-game Auto Aim applies only to backpack drones. Apply and restart. Log: DroneRemoteControl.log.",
       "Include": ["Addon"]
     }
   ]

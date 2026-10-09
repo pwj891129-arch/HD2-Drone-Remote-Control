@@ -1,13 +1,47 @@
 # HD2 Drone Remote Control
 
-**0.2.20 experimental prerelease for Helldivers 2. Solo only.**
+**0.2.22 experimental build for Helldivers 2. Solo only.**
 
 [한국어 안내 및 변경 기록](README-KO.md) | [Downloads](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases)
+
+[0.2.22 Test Release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.22-test)
 
 This is a native-control prototype, not a stable release. Offline tests and
 read-only checks of game connections passed. Actual Seeker camera takeover,
 movement, detonation and surface clearance have not been tested in game.
 Native calls can still crash the game despite ownership and code guards.
+
+### Fixed In 0.2.22
+
+Passive Guard Dog lookup failures no longer erase Seeker Q/G edge history.
+Quick Throw creates a held Seeker during its animation; capture now waits up
+to 3 seconds for this exact owned, attached inventory item. Live read-only
+records showed ballistic state 2 moving directly to active seek state 4,
+so both airborne states 3 and 4 are accepted, with native motion still required.
+Attached units, ballistic-only state 2, foreign/recycled identities and party
+joins are still refused. No flying-unit search or synthetic throw was added.
+
+Detonation immediately releases AI, movement and pose overrides so native
+explosion/destruction processing can run. Only an identity-checked, already
+exploded unit's meshes are hidden; no unit deletion, damage or effect override
+is used. The frozen camera/input hold alone lasts 0.7 seconds. Regression tests
+passed; these fixes still require confirmation after installing the new ZIP.
+
+### Quick Throw And Explosion View
+
+Hold mapped Aim Mode Switch and use mapped **Quick Throw** (currently Q+G) to
+prepare Seeker control without equipping slot 4. The same owned inventory item
+must still be attached to this actor before its native deployment is tracked.
+If it is not available immediately, the mod waits at most 3 seconds to capture
+it; it never searches for nearby launched drones. The original Q+Attack route
+is retained. Both require releasing the throw/attack key before takeover.
+
+After requested or observed detonation, the last camera position and rotation
+stay frozen for **0.7 seconds**, then player view/input and companion handling
+are restored. The hold does not access or move the destroyed drone and does not
+accept another attack. Focus loss, invalid bindings, actor/camera replacement,
+party join or shutdown interrupt it safely. In-game Q+G takeover and explosion
+timing are not yet verified; offline regression tests passed.
 
 ## Installation
 
@@ -34,7 +68,7 @@ author's current Aim Mode Switch and Backpack Function bindings, not fixed keys.
 | Mode | Enter | Move | Exit |
 | --- | --- | --- | --- |
 | Guard Dog backpack | Hold Aim Mode Switch and press Backpack Function; release both | Movement keys; Dodge up; Crouch down; mouse aim; Attack fires | Backpack Function; ammo/heat or signal limit |
-| G-50 / G-60 Seeker | Equip the throwable in slot 4; hold Aim Mode Switch; press then **release** Attack for the normal throw | Same movement and camera controls | Fresh Attack or Aim Mode Switch requests detonation; 30-second timeout |
+| G-50 / G-60 Seeker | Hold Aim Mode Switch and use Quick Throw; or equip slot 4, hold Aim Mode Switch, press then **release** Attack | Same movement and camera controls | Fresh Attack or Aim Mode Switch requests detonation; 30-second timeout; 0.7-second explosion view |
 
 Backpack targets: Guard Dog, Rover, Hot Dog, K-9 and Dog Breath. Ownership is
 checked through the worn backpack; nearby unrelated drones are not adopted.
