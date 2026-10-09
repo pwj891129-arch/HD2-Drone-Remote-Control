@@ -7,22 +7,211 @@
 ### Nexus Mods Page Notice
 
 I accidentally deleted the mod page on Nexus Mods while uploading an update.
+I've contacted Nexus Mods to request a restoration. If the page cannot be
+restored, I'll re-upload the mod on a new page.
 Until the page is restored, releases and updates will be available on GitHub.
 Sorry for the inconvenience, and thank you for your patience.
 
 [Download 0.2.33](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.33-test)
 
-[Current Controls](#controls): all actions use your configured game keyboard/mouse
-bindings. No fixed hotkeys or key-letter examples are used in the control guide.
+[Installation](#installation) | [Controls](#controls) | [Options](#in-game-options)
+| [Languages](#languages) | [Patch Notes](#patch-notes)
 
-[Previously Published 0.2.27 Test Release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.27-test)
+## Description
 
-[Previously Published 0.2.22 Test Release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.22-test)
+Take direct control of your Guard Dog or Seeker drone with a third-person camera,
+keyboard movement, mouse aiming and manual attacks.
 
-This is a native-control prototype, not a stable release. Offline tests and
-read-only checks of game connections passed. Actual Seeker camera takeover,
-movement, detonation and surface clearance have not been tested in game.
-Native calls can still crash the game despite ownership and code guards.
+Drone Remote Control is an experimental mod for Helldivers 2. Solo play is enabled
+by default; multiplayer is available through an optional in-game setting.
+
+## Main Features
+
+- Supports Guard Dog, Rover, Hot Dog, K-9 and Dog Breath backpacks.
+- Supports G-50 Seeker and G-60 Anti-Tank Seeker throwables.
+- Uses your configured game keyboard and mouse bindings, not fixed hotkeys.
+- Smooth inertial movement with approximate, nonphysical surface avoidance.
+- Distance, ammunition and heat information on the drone HUD.
+- K-9 next-shot readiness with a progress bar and remaining wait time.
+- Independent Auto Aim, Seeker Homing Assist and Allow Multiplayer options,
+  all **OFF by default**.
+- One multilingual package with automatic in-game option language selection.
+
+## Requirements
+
+- **Arsenal** for importing and deploying the mod.
+- **Bingus Shared Loader / API 1**, required and not bundled.
+- **Bingus's Mod Options Menu / API 1, version 3 or newer**, optional for changing
+  the in-game assistance and multiplayer settings.
+
+HUD+, HD2 Helper and Vehicle Dual Control are not required. Python, diagnostic
+scripts and development dependencies are not required to play.
+
+## Installation
+
+1. Completely exit Helldivers 2.
+2. Download **Drone-Remote-Control-0.2.33-private-test.zip** from
+   [the latest release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.33-test).
+3. Import the single multilingual ZIP into Arsenal and replace the previous
+   Drone Remote Control version.
+4. Enable **Backpack and Seeker Control**, deploy with Bingus Shared Loader,
+   then restart the game.
+
+Do not enable multiple versions of this mod at the same time. The optional
+`.sha256` file is a download checksum, not another mod to import.
+
+## Controls
+
+**All controls use the keyboard or mouse button assigned to the action in your
+game settings.** The names below refer to game actions, not fixed keys.
+Switch Aim Mode is also called Aim Mode Switch; Fire is also referred to as Attack.
+
+### Guard Dog Backpacks
+
+**Start remote control with the drone fully docked on your backpack.**
+
+1. Equip a supported Guard Dog backpack during a mission.
+2. Press **Use Backpack Function** to recall the drone if it is airborne, and wait
+   until it is fully attached to your backpack.
+3. Hold **Switch Aim Mode**, press **Use Backpack Function**, then release both inputs.
+4. Wait for docking/deployment preparation and camera takeover to finish.
+5. During remote control, press **Use Backpack Function** again to exit.
+
+Backpack drones are limited to **100 m** from the player. Outward movement is
+restricted at the boundary; inward and tangential movement remain available.
+If an external movement pushes the drone beyond range, it has **5 seconds** to
+return before control ends. Confirmed empty ammunition or full overheat returns
+control to native AI. The mod does not refill ammunition.
+
+### Seeker Drones
+
+Hold **Switch Aim Mode**, use **Quick Throw** (Quick Throwable / Quick Grenade),
+then release both inputs. Control starts after deployment has remained stable
+for **0.5 seconds**.
+
+Alternatively:
+
+1. Use **Equip Throwable** (Throwable / Grenade) to hold the Seeker in your hand.
+2. Hold **Switch Aim Mode**, press and release **Fire** to throw it.
+3. Release **Switch Aim Mode** and wait for control to begin.
+
+During remote control, a **new Fire press** requests detonation. **Switch Aim
+Mode does not detonate the Seeker or exit control.**
+
+Seekers have **no range limit** and no return function. Their lifetime is
+**30 seconds from deployment**. After an explosion, the camera stays at the last
+view for **0.7 seconds** before returning to the player.
+
+### Movement And Attack
+
+- **Move Forward / Backward / Left / Right**: horizontal flight.
+- **Dive / Dodge**: ascend.
+- **Crouch**: descend.
+- **Camera / Look**: look and aim.
+- **Fire / Attack**: fire the backpack drone's weapon or detonate the Seeker.
+
+## In-Game Options
+
+With Bingus's Mod Options Menu installed, open the in-game mod options menu and
+select **Drone Remote Control** (its title follows your Text Language).
+
+- **Auto Aim**: enables backpack-drone target tracking. Default **OFF**.
+- **Seeker Homing Assist**: enables enemy-seeking assistance. Movement and mouse
+  input take priority. Default **OFF**.
+- **Allow Multiplayer**: permits control of your own drones with other party
+  members present. Applies to both modes. Default **OFF**.
+
+Without the option-menu mod, these settings remain OFF. Multiplayer has not been
+verified in live gameplay; turning it on does not guarantee authority or reliable
+host/client synchronization.
+
+## Languages
+
+**One ZIP contains every option-menu translation.** Separate English and Korean
+downloads are no longer needed.
+
+In-game mod titles, option names and descriptions automatically follow the game's
+**Text Language** setting. Unsupported languages and missing translations fall
+back to English.
+
+Supported languages: English, French, Italian, German, Spanish, Latin American
+Spanish, Japanese, Korean, Brazilian Portuguese, Portuguese, Polish, Russian,
+Simplified Chinese and Traditional Chinese.
+
+Translations are local; no internet connection or extra language pack is required.
+Arsenal labels remain English. Drone HUD status messages are not included in this
+option-menu localization.
+
+## Troubleshooting
+
+- Check that Bingus Shared Loader is installed, the mod is enabled and deployed,
+  and only one version is active. Fully restart after replacing a package.
+- For backpack drones, start with the drone fully docked, then use your configured
+  **Switch Aim Mode + Use Backpack Function** actions and release both inputs.
+- If another party member is present, enable **Allow Multiplayer** to try the
+  experimental multiplayer mode.
+- If control is refused, check `DroneRemoteControl.log` for the refusal/exit reason.
+  Keyboard/mouse bindings must be supported by the mod; controller support is not
+  promised. A surface-query failure may temporarily hold flight for safety.
+
+## Important Notes
+
+This is an **experimental release**, not a stable or crash-free mod. Game updates
+can break compatibility, and native control calls can still crash the game.
+
+Surface avoidance is approximate, not exact rendered-mesh collision. Complex
+terrain, moving enemies and deeply embedded Seekers can behave unexpectedly.
+The latest vehicle/body surface-wait corrections pass offline regression tests
+but still need live gameplay verification. Not every getting-stuck report is
+claimed resolved. Crosshair convergence, shot effects and body tracking also
+remain areas for further testing. Player body rotation is not forcibly frozen.
+
+**Multiplayer is experimental, OFF by default and unverified in live gameplay.**
+Correct operation and synchronization are not guaranteed for hosts or guests.
+An invalid owner, focus loss or a safety error may end control and restore the
+player's view/input; only your own drone is eligible for control.
+
+Anti-cheat compatibility and account safety are not guaranteed. Use at your own
+risk. Local research JSON and observation records are excluded from new downloads.
+
+## Patch Notes
+
+### 0.2.33
+
+- Corrected unnecessary drone-transform checks when classifying vehicle props
+  and other collision objects.
+- Treat inactive/recycled body-part references as absent parts instead of
+  stopping the entire surface scan.
+- Retry dense collision results with a bounded 128-hit buffer; incomplete scans
+  still do not authorize movement.
+- Preserve terrain avoidance, 1 cm body clearance and strict owned-drone checks.
+- Exclude local research records from the downloadable package.
+
+### Changes Since The Previous GitHub Release (0.2.27)
+
+- **0.2.32:** terrain-overlap rechecks, retired-object filtering, aim-state
+  restoration, owned AI-reset recovery, 100 m boundary handling with 5 s overshoot
+  grace, and 0.2 s empty-ammunition confirmation.
+- **0.2.31:** corrected standard G-50 Seeker capture using its own AI profile.
+- **0.2.30:** reduced K-9 native-reader calls and capped readiness display sampling
+  at 100 ms. Mock measurements are not an in-game FPS guarantee.
+- **0.2.29:** combined all 14 option languages into one package, with automatic
+  Text Language switching and English fallback.
+- **0.2.28:** capped HUD refresh at 100 ms, cached binding discovery for 250 ms,
+  skipped unnecessary idle discovery and reduced repeated native reads/writes.
+
+These changes are included in **0.2.33**; intermediate local test packages do not
+need to be installed. The latest build passes **121 Python tests plus Lua
+regressions**, separately from live gameplay testing.
+
+[0.2.33 release notes](RELEASE-0.2.33.md) |
+[Previous 0.2.27 release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.27-test)
+
+<details>
+<summary>Detailed patch notes and development history</summary>
+
+Older entries below describe historical behavior and local test packages.
+Use the current installation and controls above.
 
 ### Changed In 0.2.33
 
@@ -341,94 +530,7 @@ accept another attack. Focus loss, invalid bindings, actor/camera replacement,
 party join with Allow Multiplayer OFF, or shutdown interrupt it safely. In-game Aim Mode Switch + Quick Throw takeover and explosion
 timing are not yet verified; offline regression tests passed.
 
-## Installation
-
-1. Completely exit the game. Use the single **0.2.31 multilingual ZIP** for this
-   local build. Public Releases may still contain older EN/KO packages.
-2. Import it into Arsenal, replace the previous Drone Remote Control version,
-   and enable its **Backpack and Seeker Control** option.
-3. Deploy with **Bingus Shared Loader / API 1**, then restart the game.
-   The loader is required and is not bundled.
-
-Mod Options Menu (API 1, version 3+) is optional, for backpack **Auto Aim** and
-**Seeker Homing Assist**, and **Allow Multiplayer**. All default OFF without it. They are independent
-settings; names and descriptions automatically follow game text language in
-14 locales, with English fallback. Arsenal metadata remains English.
-HUD+, HD2 Helper and Vehicle Dual Control are not
-required. The runtime includes cooperation with compatible HD2 Helper versions
-to suspend wheel/reload input handling during drone control.
-
-Do not run multiple versions of this mod together. Python, diagnostic scripts
-and development dependencies are not required to play.
-
-## Controls
-
-Every action below uses the key or mouse button assigned to that action in the
-game's keyboard/mouse settings. These are action names, not fixed hotkeys.
-
-### Guard Dog Backpacks
-
-1. Equip a supported Guard Dog backpack during a mission.
-2. Hold **Aim Mode Switch**, press **Backpack Function**, then release both inputs.
-3. Wait for any recall, docking and redeployment preparation to finish.
-4. During control, press **Backpack Function** again to exit.
-
-### Seeker Drones
-
-Hold **Aim Mode Switch**, use **Quick Throw**, then release both inputs.
-Takeover waits for deployment and a **0.5-second** settling period.
-
-Alternatively, use **Equip Throwable** to hold the Seeker in your hand. Hold
-**Aim Mode Switch**, press and release **Attack** to throw it, then release
-**Aim Mode Switch** and wait for takeover.
-
-During control, a new **Attack** press requests detonation. **Aim Mode Switch**
-does not detonate the Seeker or exit control. Its lifetime is **30 seconds**
-from deployment; the camera holds for **0.7 seconds** after explosion.
-
-### Movement And Attack
-
-- **Move Forward / Backward / Left / Right**: fly horizontally.
-- **Dodge**: ascend.
-- **Crouch**: descend.
-- Camera/look controls: look and aim.
-- **Attack**: fire a backpack drone's weapon, or request Seeker detonation.
-
-Backpack targets: Guard Dog, Rover, Hot Dog, K-9 and Dog Breath. Ownership is
-checked through the worn backpack; nearby unrelated drones are not adopted.
-Preparation may recall and redeploy the drone before camera takeover.
-
-Backpacks limit outward flight at 100 m; external overshoot receives a 5 s return
-grace. Empty ammunition confirmed for 0.2 s or full overheat returns control to
-native AI; the mod does not refill ammunition. Seekers have no range
-limit or return function. Throw-release and a continuously held Aim Mode Switch are not
-detonation inputs. The exact held Seeker must detach and remain deployed for
-0.5 seconds before takeover. Native detonation during this wait cancels entry.
-
-Both modes are solo-only by default: no other party members may be present.
-**Multiplayer has not been verified in live gameplay.** Allow Multiplayer ON permits parties,
-while retaining own-drone checks. A party join with that option OFF, lost focus,
-invalid ownership or an error ends control and attempts restoration without
-requesting an extra Seeker explosion.
-
-## Status And Limitations
-
-- Rover keyboard movement was confirmed in an earlier user test. New Guard Dog
-  family connections and G-60 held-object connections were checked read-only;
-  that does not prove live remote control works for each family.
-- Nonphysical terrain clearance is approximate: 1 m for backpacks, 0.5 m for
-  Seekers; other player/identified enemy projectile hit shapes use 0.01 m.
-  Own character/equipment is excluded. Complex surfaces,
-  moving bodies and leg gaps need live testing; the delay does
-  not guarantee recovery of a grenade already deeply embedded in geometry.
-- Crosshair convergence, body tracking and shot effects still need live testing.
-  The mod does not forcibly freeze the player's body rotation.
-- Game-build and ownership guards may intentionally refuse control after an
-  incompatible game update. Multiplayer is opt-in and unverified; correct operation
-  and synchronization are not guaranteed for hosts or guests. Guests may
-  lack authority or observe replication differences.
-- No claim of anti-cheat compatibility or account safety is made. Test at your
-  own risk and fully restart the game after replacing or removing the mod.
+</details>
 
 ## Development
 
