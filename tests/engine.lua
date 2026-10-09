@@ -104,10 +104,18 @@ engine:move(sample,next_position,rotation,forward)
 for i=1,4 do check(drone.rotation[i]==rotation[i],'nontrivial flight rotation preserves component order') end
 check(#reports==before_reports,'first-move stage logs do not repeat every frame')
 local manual_writes=transform_writes
+local old_position_query,position_queries = s.Unit.world_position,0
+s.Unit.world_position = function(...) position_queries = position_queries+1; return old_position_query(...) end
 engine:move(sample,next_position,rotation,forward,true)
 check(transform_writes==manual_writes,'automatic mode does not fight native target orientation')
 engine:move(sample,next_position,rotation,forward,false)
 check(transform_writes==manual_writes+1,'manual mode updates body orientation without firing')
+check(position_queries == 0,'pose writes validate ownership/parents without re-querying the already observed position')
+s.Unit.world_position = old_position_query
+sample.graph_valid = function() return false end
+check(not pcall(engine.move,engine,sample,next_position,rotation,forward,false),
+    'pose writes still reject changed parent storage')
+sample.graph_valid = function() return true end
 local before_rotations,before_writes,before_updates=rotations,transform_writes,updates
 for _,invalid in ipairs({{0,0,0},{0/0,0,0,1},{math.huge,0,0,1},{0,0,0,0},{0,0,0,0.5},{'0',0,0,1}}) do
     check(not pcall(engine.move,engine,sample,{0,6,2},invalid,{}),'invalid quaternion refused before native calls')
@@ -128,6 +136,10 @@ check(texts[2].color[3]==165,'orange distance warning')
 check(texts[2].str:find('81.0m') and texts[2].str:find('HEAT 0.25') and texts[2].str:find('HEATSINKS 3'),
     'actual heat and reserve labels')
 check(texts[2].str:find('AIM MANUAL'),'manual mode visible in HUD')
+engine:hud(sample,100,false,true,'RANGE LIMIT')
+check(texts[#texts].str:find('RANGE LIMIT'),'boundary stop has a visible explanation')
+engine:hud(sample,101,false,true,'SIGNAL RETURN 4.9s')
+check(texts[#texts].str:find('SIGNAL RETURN 4.9s',1,true),'external overshoot shows remaining recovery time')
 before_reports=#reports
 engine:hud(sample,81,true)
 check(#reports==before_reports,'first-HUD stage logs do not repeat every frame')
@@ -344,4 +356,37 @@ sample.unit_valid=function()return true end
 s.Unit.set_unit_visibility=nil
 check(not pcall(engine.prepare,make(),sample),'missing visibility API refuses before Seeker input takeover')
 engine:clear()
+local hud_now,world_queries,extents,deleted = 0,0,0,0
+channel.now = function() return hud_now end
+local original_worlds,original_extents = s.Application.worlds,s.Gui.text_extents
+s.Application.worlds = function() world_queries = world_queries+1; return original_worlds() end
+s.Gui.text_extents = function(...) extents = extents+1; return original_extents(...) end
+s.Gui.destroy_text = function() deleted = deleted+1 end
+local timed = make()
+timed.world = world
+sample.drone_name,sample.feed,sample.kind,sample.heat = 'ROVER','heat',nil,0.25
+local first_texts = #texts
+for frame = 0,239 do
+    hud_now = frame/240
+    timed:hud(sample,10+frame/240,false,true)
+end
+check(world_queries <= 10 and extents <= 10 and #texts-first_texts <= 20,
+    '240Hz control bounds world/HUD layout work to ten updates per second')
+local unchanged_texts = #texts
+hud_now = 2;timed:hud(sample,12,false,true)
+unchanged_texts = #texts
+local unchanged_deleted = deleted
+for frame = 1,20 do hud_now = 2+frame*0.11;timed:hud(sample,12,false,true) end
+check(#texts == unchanged_texts and deleted == unchanged_deleted,'unchanged HUD text persists without create/destroy churn')
+hud_now = 5;timed:hud(sample,12,true,true)
+check(texts[#texts].str:find('AIM AUTO'),'option changes refresh HUD at the next scheduled update')
+hud_now = 0.01;timed:hud(sample,12,false,true)
+check(texts[#texts].str:find('AIM MANUAL'),'clock rewind refreshes HUD immediately')
+local previous_ui,old_gui_texts = ui,#texts
+ui = {};hud_now = 0.12
+timed:hud(sample,12,false,true)
+check(timed.gui_world == ui and #texts == old_gui_texts+2,'replaced GUI world discards stale text handles and recreates HUD')
+timed:clear()
+check(not timed.hud_after and not timed.hud_signature,'cleanup resets HUD throttling and persistent text state')
+ui = previous_ui
 return checks

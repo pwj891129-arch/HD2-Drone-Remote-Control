@@ -12,6 +12,7 @@ function Lease.new(channel)
     end
     function lease:set(item, replacement)
         assert(item.valid() and channel:read(item.address, #item.value) == item.value, 'lease_lost')
+        if replacement == item.value then return end
         item.pending = replacement
         assert(channel:write(item.address, replacement), 'lease_write_failed')
         item.value, item.pending = replacement, nil
@@ -26,6 +27,15 @@ function Lease.new(channel)
         assert(channel:write(item.address,item.value), 'lease_write_failed')
         item.pending = nil
         assert(channel:read(item.address,#item.value) == item.value, 'lease_readback_failed')
+    end
+    function lease:adopt_unchanged(item, expected)
+        local found = false
+        for _, owned in ipairs(self.items) do if owned == item then found = true; break end end
+        -- Only an unchanged producer value can yield to a caller-verified native reset.
+        -- Modified configuration leases must keep their original restoration value.
+        assert(found and item.original == item.value and #expected == #item.value and
+            item.valid() and channel:read(item.address,#expected) == expected,'lease_adopt_changed')
+        item.original,item.value = expected,expected
     end
     function lease:rebind(item, address, valid)
         -- The caller must resolve the same owner/generation before refreshing storage.

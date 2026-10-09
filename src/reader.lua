@@ -1,4 +1,4 @@
-local Reader = {}
+local Reader = {arc_display_interval = 0.1}
 Reader.body_guards = {
     {0x4BE6E0,'488b05b1d8fa028bd5448b80e8aef200'},
     {0x4BE704,'4c8b90e0aef200448b98ecaef200'},
@@ -27,7 +27,7 @@ Reader.families = {
         weapon = 'b729a2ba153bcaed', feed = 'magazine', behavior = 189},
 }
 function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
-    local r = {channel = channel, options = options or {}}
+    local r = {channel = channel, options = options or {},unit_cache = {},unit_cache_order = {}}
     local part_reader = BodyParts and BodyParts.new(r,B)
     function r:raw(at, size) return assert(channel:read(at,size), 'unreadable') end
     function r:ptr(at) return B.ptr(self:raw(at,8)) end
@@ -40,11 +40,11 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         return local_count == 1 and total >= 1 and total <= 4 and
             (total == 1 or self.options.allow_multiplayer == true)
     end
-    function r:map(at, entity)
-        local h = self:raw(at,20)
+    function r:map_header(h, entity)
         local rows, count, empty, multiplier = B.ptr(h), B.word(h,8), B.word(h,12), B.word(h,16)
-        assert(count >= 1 and count <= 1048576 and entity ~= empty,
-            string.format('map_invalid: capacity=%d key=%d empty=%d',count,entity,empty))
+        if not (count >= 1 and count <= 1048576 and entity ~= empty) then
+            error(string.format('map_invalid: capacity=%d key=%d empty=%d',count,entity,empty),0)
+        end
         local power = count
         while power > 1 and power % 2 == 0 do power = power/2 end
         assert(power == 1, 'map_invalid')
@@ -56,11 +56,21 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         end
         error('component_absent',0)
     end
+    function r:map(at, entity) return self:map_header(self:raw(at,20),entity) end
     function r:component(rva, map, back, count_at, entity, rows_at, stride, limit)
         local root = self:root(rva)
-        local count, dense = self:word(root+count_at), self:map(root+map,entity)
+        -- These fields belong to one small manager header; re-read it on every
+        -- validation rather than crossing the native reader for each field.
+        local first = math.min(map,back,count_at,rows_at)
+        local size = math.max(map+20,back+8,count_at+4,rows_at+8)-first
+        assert(size <= 128,'component_header_bounds')
+        local function header() return self:raw(root+first,size) end
+        local function pointer(h,at) return B.ptr(h:sub(at-first+1,at-first+8)) end
+        local function index(h) return r:map_header(h:sub(map-first+1,map-first+20),entity) end
+        local h = header()
+        local count, dense = B.word(h,count_at-first),index(h)
         assert(dense < count and count <= limit, 'component_bounds')
-        local owners, rows = self:ptr(root+back), self:ptr(root+rows_at)
+        local owners, rows = pointer(h,back),pointer(h,rows_at)
         local descriptor_at = self:ptr(owners+dense*8)
         local descriptor = self:raw(descriptor_at,24)
         assert(B.word(descriptor,8) == entity and B.word(descriptor,16) > 0 and
@@ -70,9 +80,12 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             unit = B.word(descriptor,12), entity = entity, goid = B.word(descriptor,16)}
         function result.valid()
             local ok, valid = pcall(function()
-                return r:root(rva) == root and r:map(root+map,entity) == dense and
-                    r:word(root+count_at) > dense and r:ptr(root+back) == owners and
-                    r:ptr(root+rows_at) == rows and r:ptr(owners+dense*8) == descriptor_at and
+                if r:root(rva) ~= root then return false end
+                local current = header()
+                local count = B.word(current,count_at-first)
+                return count > dense and count <= limit and index(current) == dense and
+                    pointer(current,back) == owners and pointer(current,rows_at) == rows and
+                    r:ptr(owners+dense*8) == descriptor_at and
                     r:raw(descriptor_at,24) == descriptor
             end)
             return ok and valid
@@ -101,7 +114,27 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         return {percent = math.max(0,math.min(100,(1-remaining/interval)*100)),
             remaining = remaining,interval = interval,ready = remaining <= 0}
     end
+    function r:arc_display(gun)
+        local now = channel.now and channel:now()
+        if type(now) ~= 'number' or now ~= now or now < 0 or now == math.huge then now = nil end
+        local cached = self.arc_display_cache
+        if now and cached and now >= cached.at and now-cached.at < Reader.arc_display_interval and
+            cached.descriptor == gun.descriptor and cached.unit == gun.unit and cached.entity == gun.entity then
+            return cached.value,cached.reason
+        end
+        local available,value = pcall(self.arc_readiness,self,gun)
+        local result,reason
+        if available then result = value else reason = tostring(value) end
+        -- Display-only sample. Ammo, ownership, firing and movement stay live.
+        self.arc_display_cache = now and {at = now,descriptor = gun.descriptor,unit = gun.unit,
+            entity = gun.entity,value = result,reason = reason} or nil
+        return result,reason
+    end
     function r:unit_object(unit)
+        local cached = self.unit_cache[unit]
+        -- Only addresses/validators are reused. The current registry, generation,
+        -- object identity and accessor are checked again before every use.
+        if cached and cached.valid() then return cached.object,cached.valid end
         local registry = self:ptr(channel.exe_base+0x1A100F0)
         local h = self:raw(registry+0x88,32)
         local rows, count, gens = B.ptr(h), B.word(h,16), B.ptr(h:sub(25,32))
@@ -128,7 +161,37 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             return ok and same
         end
         assert(valid(), 'unit_changed')
+        if not cached then
+            if #self.unit_cache_order >= 64 then
+                self.unit_cache[table.remove(self.unit_cache_order,1)] = nil
+            end
+            self.unit_cache_order[#self.unit_cache_order+1] = unit
+        end
+        self.unit_cache[unit] = {object = object,valid = valid}
         return object, valid
+    end
+    function r:collision_unit_live(unit)
+        -- Static/world hits may not carry a UnitRef. Only proven retired generations
+        -- are discarded; unreadable registries remain a query failure.
+        if unit <= 0 or unit >= 1073741824 or unit % 1 ~= 0 then return nil end
+        local registry = self:ptr(channel.exe_base+0x1A100F0)
+        local header = self:raw(registry+0x88,32)
+        local rows,count,gens = B.ptr(header),B.word(header,16),B.ptr(header:sub(25,32))
+        assert(count <= 0x400000,'collision_registry_bounds')
+        local index,generation = unit%0x400000,math.floor(unit/0x400000)
+        local live,gen,slot = false,nil,nil
+        if index < count then
+            gen = self:raw(gens+index,1)
+            if gen == string.char(generation) then
+                slot = self:raw(rows+index*8,8)
+                if slot ~= string.rep('\0',8) then live = self:word(B.ptr(slot)+8) == unit end
+            end
+        end
+        assert(self:ptr(channel.exe_base+0x1A100F0) == registry and
+            self:raw(registry+0x88,32) == header and
+            (not gen or self:raw(gens+index,1) == gen) and
+            (not slot or self:raw(rows+index*8,8) == slot),'collision_registry_changed')
+        return live
     end
     function r:character_body(unit,snapshot)
         if type(unit) ~= 'number' or unit <= 0 or unit >= 1073741824 or unit % 1 ~= 0 then return false end
@@ -145,7 +208,6 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         local at = authored+0xF32F18+index*24
         local identity = self:raw(at,24)
         assert(B.word(identity,8) == entity and B.word(identity,12) == unit, 'body_descriptor_changed')
-        local _,valid = self:unit_object(unit)
         local resource = B.hex(identity:sub(1,8):reverse())
         local body = body_resources and body_resources[resource] == true
         if not body then
@@ -159,7 +221,10 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             else assert(dense == 'component_absent',dense) end
         end
         local function body_valid()
-            return valid() and r:root(0x346BF98) == authored and r:raw(at,24) == identity and
+            -- Collision classification needs identity, not the drone transform
+            -- accessor. Props and body sub-units may have another accessor.
+            return r:collision_unit_live(unit) == true and r:root(0x346BF98) == authored and
+                r:raw(at,24) == identity and
                 r:map(authored+0xF2AEE0,unit) == entity and r:map(authored+0xF1AEB0,entity) == index
         end
         assert(body_valid(),'body_identity_changed')
@@ -292,6 +357,11 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         return resolve()
     end
     function r:bindings()
+        local now = channel.now and channel:now()
+        if now and self.binding_cache and now >= self.binding_time and
+            now-self.binding_time < 0.25 and self.binding_cache.valid() then
+            return self.binding_cache
+        end
         local owner = self:root(0x347CF18)
         local buckets = self:ptr(owner+686800)
         assert(self:word(owner+686808) == 256, 'binding_layout')
@@ -375,6 +445,7 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             return ok and result
         end
         keys.binding_token, keys.pack_entries, keys.input_entries = table.concat(token,':'), pack_entries,input_entries
+        self.binding_cache,self.binding_time = keys,now
         return keys
     end
     function r:snapshot()
@@ -428,6 +499,7 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         assert(B.hex(feed.descriptor:sub(1,8):reverse()) == family.weapon, 'drone_weapon_resource')
         local feed_raw = self:raw(feed.address,12)
         local reserve, heat_value, overheated, ammo = B.word(feed_raw,0),nil,false,nil
+        local magazine_ammo,chamber_ammo
         local chambers
         if family.feed == 'heat' then
             heat_value = channel:float(feed_raw,4)
@@ -439,6 +511,7 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             chambers = self:ptr(feed.root+72)
             local chamber = self:word(chambers+feed.dense*16+8)
             assert(chamber <= 100000, 'chamber_bounds')
+            magazine_ammo,chamber_ammo = ammo,chamber
             -- Keep the final chambered round usable when the magazine reads zero.
             if ammo == 0 and chamber > 0 then ammo = 1 end
         end
@@ -517,8 +590,7 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
         local gun = self:component(0x3326CE0,48,72,24,gun_entity,88,0x3F0,4096)
         local arc,arc_reason
         if family.name == 'K-9' then
-            local available,value = pcall(self.arc_readiness,self,gun)
-            if available then arc = value else arc_reason = tostring(value) end
+            arc,arc_reason = self:arc_display(gun)
         end
         local invalid = self:word(channel.base+0x3483C20)
         assert(self:word(fire.address) == gun_entity and
@@ -552,6 +624,7 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             drone_name = family.name, behavior_kind = family.behavior,
             arc_readiness = arc,arc_reason = arc_reason,
             feed = family.feed, heat = heat_value, ammo = ammo, reserve = reserve,
+            magazine_ammo = magazine_ammo, chamber_ammo = chamber_ammo,
             exhausted = ammo ~= nil and ammo == 0, overheated = overheated,
             menu_active = math.floor(menu_flags/512)%2 == 1}
         result.ownership_key = identity..pack.descriptor..drone.descriptor..feed.descriptor..
@@ -596,12 +669,8 @@ function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
             return ok and valid
         end
         self.stage = 'revalidate'
-        assert(inventory.valid() and pack.valid() and attachment.valid() and drone.valid() and brain.valid() and
-            motion.valid() and movement.valid() and targeting.valid() and (not aim_motor or aim_motor.valid()) and
-            drone_resource_valid() and gun_resource_valid() and
-            result.unit_valid() and result.fire_valid() and result.camera_valid() and result.graph_valid() and
-            self:raw(actor_at,24) == identity and
-            self:word(players+936) == actor_goid and self:word(pack.address+4) == drone_goid and
+        -- These aggregate checks already revalidate every component and owner.
+        assert(result.unit_valid() and result.fire_valid() and result.camera_valid() and result.graph_valid() and
             self:node_index() == result.node_index, 'snapshot_changed')
         result.deployed = Flight.distance(result.actor_position,result.drone_position) > 1.5
         return result

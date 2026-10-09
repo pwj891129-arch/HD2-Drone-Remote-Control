@@ -29,6 +29,14 @@ local lease = Lease.new(channel)
 local first = lease:claim(100,'abcd','1234',function() return not stolen end)
 check(memory[100] == '1234','claim')
 lease:set(first,'5678'); check(memory[100] == '5678','set')
+local unchanged_writes = writes
+lease:set(first,'5678')
+check(writes == unchanged_writes,'unchanged lease values validate without redundant native writes')
+memory[100] = 'OTHER'
+check(not pcall(lease.set,lease,first,'5678'),'unchanged values still reject foreign byte changes')
+memory[100] = '5678';stolen = true
+check(not pcall(lease.set,lease,first,'5678'),'unchanged values still reject lost ownership')
+stolen = false
 check(lease:release() and memory[100] == 'abcd','restore')
 lease = Lease.new(channel)
 first = lease:claim(100,'abcd','1234',function() return not stolen end)
@@ -42,6 +50,15 @@ check(not pcall(lease.reassert,lease,first),'reset on replaced identity refused'
 stolen=false
 check(not pcall(Lease.new(channel).reassert,Lease.new(channel),first),'foreign lease item refused')
 lease:reassert(first);lease:release()
+lease=Lease.new(channel);memory[100]='\1'
+first=lease:claim(100,'\1','\1',function()return not stolen end)
+memory[100]='\0';lease:adopt_unchanged(first,'\0');lease:set(first,'\1')
+check(lease:release() and memory[100]=='\0','unchanged native producer reset becomes the new restoration value')
+lease=Lease.new(channel);memory[100]='abcd'
+first=lease:claim(100,'abcd','1234',function()return not stolen end)
+memory[100]='5678'
+check(not pcall(lease.adopt_unchanged,lease,first,'5678'),'modified configuration lease cannot adopt a foreign original')
+memory[100]='1234';lease:release()
 lease = Lease.new(channel)
 first = lease:claim(100,'abcd','1234',function() return true end)
 failed = 100
@@ -186,12 +203,12 @@ local function fixture(globals,state,aim,options,avoidance)
     function engine:clear() restored=restored+1 end
     function engine:seeker_explosion(sample)
         check(sample.kind=='seeker' and sample.detonating,'visual cleanup follows an actual detonation')
-        check(memory[1000]==B.u32(4) and memory[1500]=='\1',
+        check(memory[1000]==B.u32(sample.behavior_kind) and memory[1500]=='\1',
             'native behavior and Boids resume before explosion view')
         self.hidden=(self.hidden or 0)+1
     end
     function engine:move(_,position,rotation,_,automatic)
-        check(memory[1000]==B.u32(snapshot.kind=='seeker' and options and options.seeker_homing and 4 or 0) and
+        check(memory[1000]==B.u32(snapshot.kind=='seeker' and options and options.seeker_homing and snapshot.behavior_kind or 0) and
             memory[1500]=='\0','autonomous flight paused; optional Seeker target detection never owns movement')
         check(memory[3000]=='\1' and memory[3001]=='\0','actor rotation flags untouched during flight/fire')
         if not automatic then
@@ -223,6 +240,15 @@ local function enter(c,pressed)
     end
     error('entry never completed')
 end
+local idle, idle_keys, _, _, _, _, idle_reader = fixture()
+local idle_snapshots = 0
+local idle_snapshot = idle_reader.snapshot
+function idle_reader:snapshot() idle_snapshots = idle_snapshots+1; return idle_snapshot(self) end
+for _=1,240 do idle:tick(1/240) end
+check(idle_snapshots == 0,'passive frames never resolve an unused backpack camera/weapon graph')
+idle_keys[70] = true;idle:tick(1/240)
+check(idle_snapshots == 1,'aim-mode input wakes backpack discovery in the same frame')
+idle:stop('idle_test')
 local c,pressed,snapshot,engine,emitted,restored = fixture()
 enter(c,pressed)
 check(c.active and memory[1000] == B.u32(0) and memory[1100] == '\0\0','entry without native stratagem menu')
@@ -312,7 +338,11 @@ memory[1000]=B.u32(190);c:tick(0.02)
 check(c.active and memory[1000]==B.u32(0),'brief post-fire reset remains captured')
 for _=1,55 do c:tick(0.02) end
 memory[1000]=B.u32(190)
-check(not pcall(c.tick,c,0.02),'idle autonomous resume outside fire window still refuses')
+check(pcall(c.tick,c,0.02) and c.active and memory[1000]==B.u32(0),
+    'exact owned AI reset outside the fire window renews control')
+memory[1000],memory[1500]=B.u32(190),'\1'
+check(pcall(c.tick,c,0.02) and c.active and memory[1500]=='\0',
+    'matching owned AI and flight reset are recovered together')
 c:stop('idle_reset')
 check(memory[1000]==B.u32(190) and memory[1500]=='\1','cleanup preserves original resumed behavior')
 c,pressed,snapshot,engine=fixture();enter(c,pressed)
@@ -410,6 +440,10 @@ for _, reason in ipairs({'range','heat','connection','focus'}) do
     else function channel:foreground() return false end end
     local ok = pcall(c.tick,c,0.02)
     if not ok then c:stop('refused') end
+    if reason == 'range' then
+        check(c.active,'range overshoot receives a recovery grace period')
+        for _=1,251 do c:tick(0.02) end
+    end
     check(not c.active and memory[1000] == B.u32(190) and memory[1100] == '\4\0' and
         memory[1500]=='\1','automatic cleanup '..reason)
 end
@@ -674,6 +708,8 @@ for _,kind in ipairs({188,189,190,191}) do
     memory[1000]=B.u32(kind);c:tick(0.02)
     check(memory[1000]==B.u32(0),'native fire reset uses this family original behavior')
     snapshot.ammo,snapshot.exhausted=0,true;c:tick(0.02)
+    check(c.active and emitted[#emitted]==false,'first empty sample suspends fire without immediate recall')
+    for _=1,11 do if c.active then c:tick(0.02) end end
     check(not c.active and c.status=='ammo_empty_return' and emitted[#emitted]==false,
         'empty magazine stops firing and releases remote control')
     check(memory[1000]==B.u32(kind) and memory[1500]=='\1' and memory[2100]=='MOVE' and memory[1100]=='\4\0',
@@ -686,6 +722,56 @@ check(not pcall(c.tick,c,0.02),'invalid ownership/solo roster stops before fligh
 c:stop('solo_required')
 check(not c.active and memory[1000]==B.u32(190) and memory[1500]=='\1' and memory[2100]=='MOVE',
     'party join cleanup restores owned AI and input even when a new snapshot is refused')
+
+c,pressed,snapshot,engine,emitted=fixture()
+snapshot.feed,snapshot.ammo,snapshot.heat='magazine',30,nil
+enter(c,pressed);pressed[1]=true;c:tick(0.02)
+snapshot.ammo,snapshot.exhausted=0,true;c:tick(0.02)
+snapshot.ammo,snapshot.exhausted=30,false;c:tick(0.02)
+check(c.active and c.session.empty_since==nil and emitted[#emitted],
+    'transient empty feed recovers without losing camera or manual attack')
+memory[1000],memory[1500]=B.u32(190),'\1';c:tick(0.02)
+check(c.active and snapshot.ammo==30,'owned AI recall reset cannot discard thirty remaining rounds')
+c:stop('ammo_feed_test')
+
+c,pressed,snapshot,engine=fixture()
+enter(c,pressed);snapshot.drone_position={0,99.99,0};pressed[87]=true
+for _=1,100 do
+    c:tick(0.02)
+    snapshot.drone_position={unpack(engine.position)}
+    check(c.active and Flight.distance(snapshot.actor_position,snapshot.drone_position)<=100.000001,
+        'held outward input stops at the signal boundary without exiting')
+end
+pressed[87],pressed[83]=false,true
+for _=1,20 do c:tick(0.02);snapshot.drone_position={unpack(engine.position)} end
+check(c.active and snapshot.drone_position[2]<99,'inward movement remains usable at the boundary')
+snapshot.drone_position={0,101,0};c:tick(0.02)
+check(c.active and c.session.outside_since,'external range displacement starts grace')
+snapshot.drone_position={0,99,0};c:tick(0.02)
+check(c.active and not c.session.outside_since,'return inside the range clears the signal timer')
+c:stop('boundary_test')
+
+local unavailable={clear=function(self)self.sample=nil;self.wait_since=nil end,
+    move=function(self,_,position,_,_,now)
+        self.wait_since=self.wait_since or now
+        return position,{0,0,0,0},{0,0,0}
+    end}
+c,pressed,snapshot,engine=fixture(nil,nil,nil,nil,unavailable)
+enter(c,pressed)
+for _=1,102 do if c.active then c:tick(0.02) end end
+check(not c.active and c.status=='surface_unavailable_return' and memory[1500]=='\1' and memory[2100]=='MOVE',
+    'persistent surface failure restores native AI and player control instead of holding forever')
+
+for _,dt in ipairs({1/30,1/60,1/144}) do
+    local position,velocity={0,99.8,0},{0,0,0}
+    for _=1,math.ceil(2/dt) do
+        local proposed,_,_,_,_,_,_,wanted=Flight.step(position,0,0,
+            {right=1,left=0,forward=1,back=0,up=0,down=0},dt,velocity)
+        position,_,velocity=Flight.boundary(position,{0,0,0},wanted,dt)
+        check(Flight.distance(position,{0,0,0})<=100.000001,'diagonal/tangent flight remains within range at different FPS')
+    end
+    check(position[1]>1,'range limit preserves tangential movement')
+end
 local multiplayer_options={allow_multiplayer=true}
 c,pressed,snapshot,engine,emitted=fixture(nil,nil,nil,multiplayer_options)
 snapshot.unit_valid=function() return multiplayer_options.allow_multiplayer end
@@ -698,15 +784,17 @@ c:stop('solo_required')
 check(not c.active and emitted[#emitted]==false and memory[1000]==B.u32(190) and
     memory[1500]=='\1' and memory[2100]=='MOVE' and memory[1100]=='\4\0',
     'live multiplayer OFF stops fire and restores camera, input and autonomous behavior')
-local function seeker_fixture(options)
+local function seeker_fixture(options,family)
     local c,pressed,sample,engine,emitted,restored,reader = fixture(nil,nil,nil,options)
-    sample.kind,sample.drone_name,sample.behavior_kind = 'seeker','G-60 SEEKER',4
+    local behavior_kind = family == 'G-50' and 621 or 4
+    local name = family == 'G-50' and 'G-50 SEEKER' or 'G-60 SEEKER'
+    sample.kind,sample.drone_name,sample.behavior_kind = 'seeker',name,behavior_kind
     sample.deployed,sample.docked = false,false
     sample.heat,sample.feed,sample.targeting = nil,nil,nil
-    sample.ticket = {identity='held-original',actor_identity='local-owner',name='G-60 SEEKER'}
+    sample.ticket = {identity='held-original',actor_identity='local-owner',name=name,behavior_kind=behavior_kind}
     sample.equipped,sample.available = true,true
     sample.actor_valid,sample.camera_owned = true,true
-    memory[1000]=B.u32(4)
+    memory[1000]=B.u32(behavior_kind)
     memory[1300]=floats({0,0,0,1})
     sample.detonation_valid = function() return sample.deployed and not sample.detonating and sample.unit_valid() end
     local observer = {}
@@ -739,12 +827,12 @@ local function seeker_fixture(options)
         pressed[70]=true;c:tick(0.02)
         pressed[quick and 71 or 1]=true;c:tick(0.02)
         check(c.seeker_ticket and not c.active and not c.input_lease,'press reserves native throw, never takes over a held bomb')
-        check(memory[1000]==B.u32(4) and memory[2100]=='MOVE' and #channel.commands==0,
+        check(memory[1000]==B.u32(behavior_kind) and memory[2100]=='MOVE' and #channel.commands==0,
             'held Q+attack never modifies AI, input or emits synthetic throw')
         pressed[quick and 71 or 1]=false;c:tick(0.02)
         check(not c.active,'release alone does not fake deployment')
         sample.deployed=true;c:tick(0.02)
-        check(not c.active and not c.input_lease and memory[1000]==B.u32(4),
+        check(not c.active and not c.input_lease and memory[1000]==B.u32(behavior_kind),
             'deployment begins a half-second native settling period without camera or input capture')
         c:tick(0.49)
         check(not c.active,'settling period cannot finish early')
@@ -753,6 +841,29 @@ local function seeker_fixture(options)
         check(detonations==0 and #emitted==0,'throw attack release is not detonation or native gun fire')
     end
     return c,pressed,sample,engine,launch,function() return detonations end,observer,reader
+end
+for _,family in ipairs({'G-50','G-60'}) do
+    for _,quick in ipairs({false,true}) do
+        local options = {seeker_homing=false}
+        local c,pressed,sample,engine,launch,count = seeker_fixture(options,family)
+        local original = B.u32(sample.behavior_kind)
+        launch(quick)
+        pressed[87]=true;c:tick(0.02)
+        check(c.active and engine.moved>0 and memory[1000]==B.u32(0),
+            family..' manual flight pauses its exact native AI for either throw route')
+        memory[1000]=original;c:tick(0.02)
+        check(c.active and memory[1000]==B.u32(0),family..' native reset does not steal control')
+        options.seeker_homing=true;c:tick(0.02)
+        check(c.active and memory[1000]==original,family..' homing retains its own behavior, not another family')
+        options.seeker_homing=false;c:tick(0.02)
+        check(memory[1000]==B.u32(0),family..' disabling homing pauses its AI again')
+        pressed[1]=true;c:tick(0.02)
+        check(count()==1 and c.aftermath and memory[1000]==original,
+            family..' detonation restores the exact original native behavior')
+        c:tick(0.701)
+        check(not c.session and memory[2100]=='MOVE' and memory[1100]=='\4\0',
+            family..' restores player input and camera after explosion')
+    end
 end
 for _,button in ipairs({1}) do
     local c,pressed,sample,engine,launch,count=seeker_fixture()
@@ -909,11 +1020,21 @@ pressed[71]=true;c:tick(0.02)
 check(not c.seeker_ticket and not c.seeker.quick_wait,'held Q+G on focus return does not arm a throw')
 local reader
 c,pressed,sample,engine,launch,count,observer,reader=seeker_fixture()
+local idle_captures = 0
+local idle_capture = observer.capture
+function observer:capture(quick) idle_captures = idle_captures+1; return idle_capture(self,quick) end
+for _=1,240 do c:tick(1/240) end
+check(idle_captures == 0,'idle Seeker monitoring samples keys without resolving a held-item graph')
+pressed[70] = true;c:tick(1/240)
+check(idle_captures > 0,'mapped aim modifier wakes Seeker capture immediately')
+c:stop('seeker_idle_test')
+c,pressed,sample,engine,launch,count,observer,reader=seeker_fixture()
 sample.available,sample.equipped=false,false
 function reader:snapshot() error('guard_dog_required') end
 local function no_backpack_tick()
-    check(not pcall(c.tick,c,0.02),'missing backpack is a passive read failure')
-    c:reset_inputs(true)
+    local ok = pcall(c.tick,c,0.02)
+    check(ok == not pressed[70],'missing backpack is queried only while the entry modifier is held')
+    if not ok then c:reset_inputs(true) end
 end
 -- A rifle-only loadout must still retain Q/G edges across normal backpack absence.
 no_backpack_tick();pressed[70]=true;no_backpack_tick()

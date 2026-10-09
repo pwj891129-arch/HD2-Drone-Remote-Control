@@ -53,4 +53,32 @@ local site = Reader.arc_guards[1][1]+channel.base
 memory[site] = string.rep('\0',7)
 local other = Reader.new(channel,B);other.component = r.component
 check(not pcall(other.arc_readiness,other,gun),'changed native build refuses before timer lookup')
+local direct,calls = r.arc_readiness,0
+function r:arc_readiness(current) calls=calls+1;return direct(self,current) end
+channel.time=0
+function channel:now() return self.time end
+memory[arc.address] = ffi.string(ffi.new('float[4]',{0,0,2.5,5}),16)
+value = r:arc_display(gun)
+check(value.percent==50 and calls==1,'first display samples the live Arc timer')
+memory[arc.address] = ffi.string(ffi.new('float[4]',{0,0,0,5}),16)
+for frame=1,11 do
+    channel.time=frame/120;value=r:arc_display(gun)
+end
+check(value.percent==50 and calls==1,'HUD-only timer lookup is limited to ten samples per second')
+channel.time=0.1;value=r:arc_display(gun)
+check(value.ready and calls==2,'next display sample sees completed readiness')
+channel.time=0;value=r:arc_display(gun)
+check(value.ready and calls==3,'clock rewind refreshes instead of indefinitely keeping a sample')
+gun.descriptor='replacement K-9';channel.time=0.01
+local failed,reason=r:arc_display(gun)
+check(not failed and reason:find('arc_owner_changed') and calls==4,'owner changes discard even a recent display sample')
+channel.time=0.02;failed,reason=r:arc_display(gun)
+check(not failed and calls==4,'optional failure retries are bounded as well')
+arc.descriptor=gun.descriptor;channel.time=0.12;value=r:arc_display(gun)
+check(value.ready and calls==5,'optional failure does not prevent the next scheduled retry')
+for _,now in ipairs({-1,0/0,math.huge,'invalid'}) do
+    channel.time=now;local previous=calls;value=r:arc_display(gun)
+    check(value.ready and calls==previous+1,'invalid display clock disables only the cache')
+end
+check(Reader.arc_display_interval==0.1,'K-9 sampling follows the 100ms HUD cadence')
 return checks

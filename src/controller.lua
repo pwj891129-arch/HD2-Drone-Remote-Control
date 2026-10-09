@@ -1,4 +1,9 @@
 local Controller = {}
+local function weapon_detail(snapshot)
+    return string.format('ammo=%s; magazine=%s; chamber=%s; reserve=%s; heat=%s',
+        tostring(snapshot.ammo),tostring(snapshot.magazine_ammo),tostring(snapshot.chamber_ammo),
+        tostring(snapshot.reserve),tostring(snapshot.heat))
+end
 function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, report, cooperation, aim, options, pose, avoidance, Guidance)
     local c = {active = false, status = 'idle', hotkey = Hotkey.new(), pending_cleanup = false}
     local zero = B.u32(0)
@@ -10,6 +15,7 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
     function c:stop(reason)
         local session = self.session
         local detail = 'exit: '..reason
+        if session and session.last_weapon then detail = detail..'; '..weapon_detail(session.last_weapon) end
         if session and session.started_at then
             local ok,now = pcall(channel.now,channel)
             if ok and type(now) == 'number' and now == now and now < math.huge then
@@ -195,7 +201,7 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         local lease = Lease.new(channel)
         self.session = {lease = lease, context = snapshot, token = snapshot.token,
             ownership_key = snapshot.ownership_key, firing = false,
-            velocity = {0,0,0}, fire_guard_until = -1,started_at = channel:now(),
+            velocity = {0,0,0}, started_at = channel:now(),
             input_trace_remaining = 12, input_trace_after = 0}
         self.stage = 'entry/player_input'
         self:arm_inputs(self.keys)
@@ -334,10 +340,16 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
             consumed,snapshot = self.seeker:monitor(self,keys)
             if consumed then return end
         end
+        local aim_mode_down, backpack_down = channel:down(keys.aim_mode),channel:down(keys.backpack)
+        if not snapshot and not self.active and not self.pending and not self.pack_lease and not aim_mode_down then
+            self.hotkey:step({binding_token = keys.binding_token,backpack_down = backpack_down,
+                aim_mode_down = false,control_active = false,entry_pending = false,entry_allowed = false})
+            self.status = 'idle'
+            return
+        end
         self.stage = 'snapshot'
         snapshot = snapshot or reader:snapshot()
         if not self.active and not self.pending then self.status = 'ready' end
-        local aim_mode_down, backpack_down = channel:down(keys.aim_mode),channel:down(keys.backpack)
         self.stage = 'hotkey'
         if snapshot.kind ~= 'seeker' and not self.active and not self.pending and aim_mode_down then
             self:arm_backpack(keys)
@@ -368,21 +380,38 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
             session.context.brain.valid(), 'control_behavior_changed')
         assert(snapshot.motion.address == session.context.motion.address and snapshot.motion.valid() and
             session.context.motion.valid(), 'control_motion_changed')
-        if snapshot.kind == 'seeker' and reader:raw(snapshot.motion.address,1) == '\1' then
-            session.lease:reassert(session.motion)
-        end
-        assert(reader:raw(snapshot.motion.address,1) == '\0','control_motion_resumed')
         assert(snapshot.movement.address == session.context.movement.address and snapshot.movement.valid() and
             session.context.movement.valid(), 'control_movement_changed')
         self.stage = 'control/camera'
         self:camera_tick(snapshot,snapshot.drone_position)
+        session.last_weapon = snapshot
         if snapshot.overheated then self:stop('overheated_return'); return end
-        if snapshot.exhausted then self:stop('ammo_empty_return'); return end
+        local now = channel:now()
+        if snapshot.exhausted then
+            if not session.empty_since or now < session.empty_since then session.empty_since = now end
+            if snapshot.kind ~= 'seeker' and session.firing then
+                channel:fire(snapshot,false); session.firing = false
+            end
+            if now-session.empty_since >= 0.2 then self:stop('ammo_empty_return'); return end
+        else session.empty_since = nil end
         local observed = engine:observe(snapshot)
         if not observed.free then self:stop('drone_stowed'); return end
         local distance = observed.distance
-        if snapshot.kind ~= 'seeker' and distance > 100 then self:stop('signal_lost'); return end
         local behavior = reader:word(snapshot.brain.address)
+        local motion = reader:raw(snapshot.motion.address,1)
+        if motion == '\1' then
+            assert(snapshot.kind == 'seeker' or behavior == snapshot.behavior_kind,
+                'control_motion_resumed')
+            session.lease:reassert(session.motion)
+            motion = '\0'
+        end
+        assert(motion == '\0','control_motion_resumed')
+        if snapshot.kind ~= 'seeker' then
+            if distance > Flight.range+0.05 then
+                if not session.outside_since or now < session.outside_since then session.outside_since = now end
+                if now-session.outside_since >= Flight.range_grace then self:stop('signal_lost'); return end
+            else session.outside_since = nil end
+        end
         local homing = snapshot.kind == 'seeker' and options and options.seeker_homing == true or false
         if snapshot.kind == 'seeker' then
             local desired = B.u32(homing and snapshot.behavior_kind or 0)
@@ -399,13 +428,13 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
                 session.lease:reassert(session.movement)
             end
         elseif behavior ~= 0 then
-            -- Native firing can reset this same drone to its original behavior type.
-            -- Reclaim only that known reset during our own fire window, never foreign states.
-            assert(behavior == snapshot.behavior_kind and channel:now() <= session.fire_guard_until and
+            -- Reload/recall updates can reset the exact owned AI outside a fire window.
+            -- Only the leased original family value is recoverable, never a foreign type.
+            assert(behavior == snapshot.behavior_kind and
                 snapshot.fire_valid() and session.context.fire_valid(), 'control_behavior_resumed')
             session.lease:reassert(session.behavior)
             if not session.fire_reset_reported then
-                report('owned drone behavior reset during manual fire; capture renewed')
+                report('owned drone AI reset; capture renewed; '..weapon_detail(snapshot))
                 session.fire_reset_reported = true
             end
         end
@@ -422,20 +451,31 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         end
         local position,yaw,pitch,camera,quaternion,forward,command,velocity = Flight.step(observed.position,
             session.yaw,session.pitch,input,dt,session.velocity)
+        if snapshot.kind ~= 'seeker' then
+            local before = position
+            position,command,velocity,session.range_limited = Flight.boundary(observed.position,
+                snapshot.actor_position,velocity,dt)
+            for axis=1,3 do camera[axis] = camera[axis]+position[axis]-before[axis] end
+        end
         if avoidance then
             self.stage = 'control/clearance'
             local proposed = position
             position,command,velocity = avoidance:move(snapshot,observed.position,velocity,dt,channel:now(),session.velocity)
             for axis = 1,3 do camera[axis] = camera[axis]+position[axis]-proposed[axis] end
         end
-        if snapshot.kind ~= 'seeker' and Flight.distance(snapshot.actor_position,position) > 100 then self:stop('signal_lost'); return end
-        local signature = string.format('%d%d%d%d%d%d',input.forward,input.back,input.left,input.right,input.up,input.down)
-        if session.input_trace_remaining > 0 and signature ~= session.input_trace and
-            channel:now() >= session.input_trace_after then
-            report(string.format('flight input=%s mouse=%.0f,%.0f speed=%.1fm/s step=%.3fm dt=%.4f',
-                signature,dx,dy,command[4],Flight.distance(observed.position,position),dt))
-            session.input_trace_remaining = session.input_trace_remaining-1
-            session.input_trace,session.input_trace_after = signature,channel:now()+0.25
+        if snapshot.kind ~= 'seeker' then
+            if avoidance and avoidance.wait_since and now-avoidance.wait_since >= 2 then
+                self:stop('surface_unavailable_return'); return
+            end
+        end
+        if session.input_trace_remaining > 0 and channel:now() >= session.input_trace_after then
+            local signature = string.format('%d%d%d%d%d%d',input.forward,input.back,input.left,input.right,input.up,input.down)
+            if signature ~= session.input_trace then
+                report(string.format('flight input=%s mouse=%.0f,%.0f speed=%.1fm/s step=%.3fm dt=%.4f',
+                    signature,dx,dy,command[4],Flight.distance(observed.position,position),dt))
+                session.input_trace_remaining = session.input_trace_remaining-1
+                session.input_trace,session.input_trace_after = signature,channel:now()+0.25
+            end
         end
         session.lease:set(session.movement,channel:floats(command))
         self.stage = 'control/aim'
@@ -448,16 +488,17 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         session.camera_lease:set(session.camera_rotation,channel:floats(quaternion))
         session.yaw,session.pitch,session.velocity = yaw,pitch,velocity
         self.stage = 'control/fire'
-        local firing = channel:down(keys.fire)
+        local firing = channel:down(keys.fire) and not snapshot.exhausted
         if snapshot.kind ~= 'seeker' and firing ~= session.firing then
-            session.fire_guard_until = channel:now()+1
             channel:fire(snapshot,firing)
             session.firing = firing
             report('manual weapon input: '..(firing and 'pressed' or 'released'))
         end
-        if snapshot.kind ~= 'seeker' and firing then session.fire_guard_until = channel:now()+1 end
         self.stage = 'control/hud'
-        engine:hud(snapshot,distance,automatic,not avoidance or avoidance.sample ~= nil)
+        local signal = session.outside_since and
+            string.format('SIGNAL RETURN %.1fs',math.max(0,Flight.range_grace-(now-session.outside_since))) or
+            session.range_limited and 'RANGE LIMIT' or nil
+        engine:hud(snapshot,distance,automatic,not avoidance or avoidance.sample ~= nil,signal)
     end
     return c
 end

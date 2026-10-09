@@ -15,7 +15,7 @@ def assembled_source():
 
 def runtime_source():
     source = (ROOT / 'src/runtime.lua').read_text(encoding='ascii')
-    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'options', 'aim', 'pose', 'platform', 'reader', 'body_resources', 'body_parts', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'seeker_guidance', 'engine', 'controller', 'clock'):
+    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'translations', 'language', 'options', 'aim', 'pose', 'platform', 'reader', 'body_resources', 'body_parts', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'seeker_guidance', 'engine', 'controller', 'clock'):
         source = source.replace('-- @' + name.upper() + '@',
                                 (ROOT / 'src' / (name + '.lua')).read_text(encoding='ascii'))
     assert '-- @' not in source
@@ -115,7 +115,15 @@ def run():
     arc_checks = lua.execute((ROOT / 'tests/arc_readiness.lua').read_text(encoding='ascii'),reader,modules[0])
     check(arc_checks >= 15)
     options = lua.execute((ROOT / 'src/options.lua').read_text(encoding='ascii'))
-    options_checks = lua.execute((ROOT / 'tests/options.lua').read_text(encoding='ascii'), options, modules[0])
+    translations = lua.execute((ROOT / 'src/translations.lua').read_text(encoding='ascii'))
+    language = lua.execute((ROOT / 'src/language.lua').read_text(encoding='ascii'))
+    language_checks = lua.execute((ROOT / 'tests/language.lua').read_text(encoding='ascii'), language, modules[0], translations)
+    check(language_checks >= 100)
+    for locale, catalog in translations.items():
+        check(len(list(catalog.keys())) == 7)
+        for key, value in catalog.items():
+            check(isinstance(value, str) and bool(value.strip()) and not any(ord(c) < 32 for c in value))
+    options_checks = lua.execute((ROOT / 'tests/options.lua').read_text(encoding='ascii'), options, modules[0], language, translations)
     check(options_checks >= 25)
     engine = lua.execute((ROOT / 'src/engine.lua').read_text(encoding='ascii'))
     engine_checks = lua.execute((ROOT / 'tests/engine.lua').read_text(encoding='ascii'), engine, modules[2])
@@ -128,7 +136,7 @@ def run():
     guidance_checks = lua.execute((ROOT/'tests/seeker_guidance.lua').read_text(encoding='ascii'),modules[10],modules[2])
     check(guidance_checks >= 20)
     runtime = (ROOT / 'src/runtime.lua').read_text(encoding='ascii')
-    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'options', 'aim', 'pose', 'platform', 'reader', 'body_resources', 'body_parts', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'seeker_guidance',
+    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'translations', 'language', 'options', 'aim', 'pose', 'platform', 'reader', 'body_resources', 'body_parts', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'seeker_guidance',
                  'engine', 'controller', 'clock'):
         stub = {'platform': 'return {new=function() return test_channel end}',
                 'reader': 'return {new=function() return test_reader end}',
@@ -215,16 +223,47 @@ def run():
     check(module.u32(bytes.fromhex('04000000')) == 4)
     for manifest in ('manifest.json', 'manifest-ko.json'):
         data = json.loads((ROOT / manifest).read_text(encoding='utf-8'))
-        check('0.2.27' in data['Name'] and data['Description'].startswith('0.2.27'))
+        check('0.2.33' in data['Name'] and data['Description'].startswith('0.2.33'))
         check(data['Guid'] == '73c9cb24-d2ee-4bd1-818c-a07a570885a7')
         check(data['Options'][0]['Include'] == ['Addon'])
     suite = unittest.defaultTestLoader.discover(str(ROOT / 'tests'), pattern='test_*.py')
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     check(result.wasSuccessful())
+    from test_runtime_reader import performance_workload
+    performance = performance_workload()
+    from test_control_performance import k9_control_workload
+    k9_performance = k9_control_workload()
     report = {'checks': checks, 'control_checks': control_checks, 'engine_mock_checks': engine_checks,
+              'performance_optimizations': {
+                  'hud_interval_ms': engine.hud_interval * 1000,
+                  'hud_unchanged_text_retained': True,
+                  'binding_discovery_interval_ms': 250,
+                  'cached_binding_entries_revalidated': True,
+                  'idle_backpack_and_seeker_graph_discovery_skipped': True,
+                  'surface_turn_query_bursts_removed': True,
+                  'unchanged_lease_values_revalidated_without_writes': True,
+                  'native_read_and_float_buffers_reused': True,
+                  'authored_body_definition_cache_capacity': 64,
+                  'fixture_snapshot_reads_0_2_27': 862,
+                  'fixture_snapshot_reads_0_2_28': 750,
+                  'fixture_snapshot_bytes_0_2_28': 8175,
+                  'fixture_snapshot_reads_0_2_30': performance['snapshot_reads'],
+                  'fixture_snapshot_bytes_0_2_30': performance['snapshot_bytes'],
+                  'fixture_binding_bytes_120_frames_0_2_27': 10078560,
+                  'fixture_binding_bytes_120_frames_0_2_28': 400144,
+                  'fixture_binding_bytes_120_frames_0_2_30': performance['binding_bytes_120_frames'],
+                  'component_header_fields_batched_without_cross_frame_value_cache': True,
+                  'unit_address_cache_capacity': 64,
+                  'unit_addresses_revalidated_on_every_lookup': True,
+                  'k9_display_read_interval_ms': reader.arc_display_interval * 1000,
+                  'fixture_k9_control_reads_120_frames_0_2_29': 246960,
+                  'fixture_k9_control_bytes_120_frames_0_2_29': 2691240,
+                  'fixture_k9_control_0_2_33': k9_performance,
+                  'in_game_fps_measured': False},
               'runtime_lifecycle_checks': runtime_checks,
               'platform_input_checks': platform_checks,
               'seeker_hotkey_checks': seeker_hotkey_checks,
+              'seeker_behavior_profiles': {'G-50': 621, 'G-60': 4},
               'seeker_guidance_checks': guidance_checks,
               'seeker_entry_delay_s': 0.5,
               'seeker_aim_mode_detonates': False,
@@ -241,10 +280,23 @@ def run():
               'body_named_health_actor_filter': True,
               'moving_body_overlap_allows_escape': True,
               'surface_query_hit_capacity': 32,
+              'surface_query_overflow_retry_capacity': 128,
+              'surface_query_partial_results_discarded': True,
+              'collision_classification_requires_drone_transform_accessor': False,
+              'inactive_native_actor_handles_are_not_damage_parts': True,
               'signed_penetration_plane_recovery': True,
               'own_body_equipment_excluded_before_geometry': True,
               'initial_overlap_reverse_probe_recovery': True,
-              'initial_overlap_recovery_max_probe_count': 28,
+              'initial_overlap_recovery_max_probe_count': 35,
+              'initial_overlap_with_overflow_max_probe_count': 70,
+              'terrain_box_overlap_narrow_retry_half_extent_m': 0.02,
+              'destroyed_generation_collision_hits_discarded': True,
+              'persistent_surface_failure_native_return_s': 2,
+              'backpack_range_limit_m': modules[2].range,
+              'backpack_range_overshoot_grace_s': modules[2].range_grace,
+              'empty_feed_confirmation_s': 0.2,
+              'owned_native_ai_reset_outside_fire_window_recovered': True,
+              'manual_motor_activation_restored_on_exit': True,
               'unresolved_overlap_holds_flight': True,
               'body_damage_probe_half_extent_m': 0.001,
               'terrain_probe_half_extent_m': 0.2,
@@ -255,6 +307,12 @@ def run():
               'in_game_multiplayer_tested': False,
               'cooperation_checks': cooperation_checks,
               'manual_aim_checks': aim_checks, 'in_game_options_checks': options_checks,
+              'option_language_checks': language_checks,
+              'option_translation_locales': sorted(translations.keys()),
+              'option_language_interval_ms': language.interval * 1000,
+              'option_language_fallback': 'en',
+              'language_change_preserves_option_values': True,
+              'option_label_render_memory_reads': 0,
               'pose_ownership_checks': pose_checks,
               'surface_clearance_checks': avoidance_checks,
               'surface_query_checks': query_checks,

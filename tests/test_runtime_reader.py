@@ -1,6 +1,5 @@
 """Runtime reader fixtures. No real process memory or engine functions."""
 import struct
-import json
 import sys
 import unittest
 from test_snapshot import Memory, ROOT
@@ -10,6 +9,18 @@ from lupa.luajit21 import LuaRuntime
 
 
 class RuntimeMemory(Memory):
+    def read(self, at, size):
+        changed = self.changed
+        if changed is None or at == changed or not at <= changed < at+size:
+            return super().read(at, size)
+        # A field can now be inside a batched header rather than at the read start.
+        raw = super().read(at, size)
+        self.observed[changed] = self.observed.get(changed, 0)+1
+        if self.observed[changed] >= 2:
+            offset = changed-at
+            raw = raw[:offset]+bytes([raw[offset] ^ 1])+raw[offset+1:]
+        return raw
+
     def root(self, rva):
         if rva == 0x3326558:
             manager = self.allocate(bytes(0x4900))
@@ -173,18 +184,18 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
             self.memory.put(pointer(pointer(root(0x3326D48)+64)),gun)
         return profile
 
-    def test_all_families_match_authored_catalog_and_behavior_evidence(self):
-        evidence = json.loads((ROOT/'research/guard-dog-catalog.json').read_text())
-        self.assertTrue(evidence['read_only'])
-        self.assertEqual(len(evidence['entries']),5)
+    def test_all_families_have_complete_runtime_profiles(self):
+        expected = {b'ROVER': (b'heat',190), b'GUARD DOG': (b'magazine',191),
+                    b'HOT DOG': (b'magazine',188), b'K-9': (b'magazine',190),
+                    b'DOG BREATH': (b'magazine',189)}
         self.assertEqual(len(list(self.families)),5)
-        for entry in evidence['entries']:
-            pack = entry['pack'][2:].lower()
-            family = self.families[pack.encode()]
-            self.assertEqual(family[b'body'].decode(),entry['body'][2:].lower())
-            self.assertEqual(family[b'weapon'].decode(),entry['weapon'][2:].lower())
-            self.assertEqual(family[b'feed'],b'heat' if entry['family'] == 'beam' else b'magazine')
-            self.assertEqual(family[b'behavior'],entry['behavior'])
+        self.assertEqual({family[b'name'] for family in self.families.values()},set(expected))
+        for pack,family in self.families.items():
+            with self.subTest(name=family[b'name']):
+                for resource in (pack,family[b'body'],family[b'weapon']):
+                    self.assertRegex(resource.decode(),r'^[0-9a-f]{16}$')
+                self.assertEqual((family[b'feed'],family[b'behavior']),expected[family[b'name']])
+                self.assertEqual(len({pack,family[b'body'],family[b'weapon']}),3)
 
     def test_all_magazine_drones_resolve_without_laser_heat(self):
         for pack in ('255ebc5767d7ceec','3015626aa69f8d4d','c28da712b12e3dfa','bffcb4cd971a8eda'):
@@ -196,6 +207,8 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
                 self.assertEqual(sample[b'behavior_kind'],family[b'behavior'])
                 self.assertEqual(sample[b'feed'],b'magazine')
                 self.assertEqual(sample[b'ammo'],40)
+                self.assertEqual(sample[b'magazine_ammo'],40)
+                self.assertEqual(sample[b'chamber_ammo'],0)
                 self.assertEqual(sample[b'reserve'],6)
                 self.assertIsNone(sample[b'heat'])
                 self.assertFalse(sample[b'exhausted'])
@@ -770,6 +783,175 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
         self.memory.word(at + 4, 999)
         self.assertFalse(keys[b'valid']())  # Optional stratagem entries are tracked for input suppression.
 
+    def test_binding_cache_avoids_full_table_reads_but_rechecks_payloads(self):
+        self.lua.execute(b'channel.time=0; function channel:now() return self.time end')
+        reads = []
+        original = self.memory.read
+
+        def observed(at, size):
+            reads.append((at, size))
+            return original(at, size)
+
+        self.lua.globals().read_fixture = observed
+        for frame in range(120):
+            self.lua.globals().channel[b'time'] = frame / 120
+            keys = self.native.bindings(self.native)
+            self.assertTrue(keys[b'valid']())
+        full = [size for _, size in reads if size == 256 * 328]
+        self.assertEqual(len(full), 4)
+        self.assertLess(sum(size for _, size in reads), 500_000)
+        self.memory.word(self.memory.buckets + 8, (81 << 20) | 0xFF43)
+        self.lua.globals().channel[b'time'] = 0.999
+        keys = self.native.bindings(self.native)
+        self.assertEqual(keys[b'aim_mode'], 81)
+
+    def test_offline_workload_budget(self):
+        counts = performance_workload()
+        self.assertLessEqual(counts['snapshot_reads'], 592)
+        self.assertLessEqual(counts['snapshot_bytes'], 8175)
+        self.assertLess(counts['binding_bytes_120_frames'], 500_000)
+
+    def test_component_header_batch_still_validates_every_identity_field(self):
+        component = self.native.component(self.native, 0x3326738, 40, 64, 20, 1242, 80, 48, 512)
+        root = component[b'root']
+        pointer = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        rows, owners = pointer(root+80), pointer(root+64)
+        descriptor_at = pointer(owners)
+        cases = [(self.memory.game+0x3326738, struct.pack('<Q', root+8)),
+                 (root+20, struct.pack('<I', 0)), (root+20, struct.pack('<I', 513)),
+                 (root+64, struct.pack('<Q', owners+8)), (root+80, struct.pack('<Q', rows+8)),
+                 (owners, struct.pack('<Q', descriptor_at+8)),
+                 (descriptor_at+12, struct.pack('<I', 0x800001)),
+                 (root+48, struct.pack('<I', 3))]  # Hash-map capacity must be a power of two.
+        for at, replacement in cases:
+            with self.subTest(address=hex(at)):
+                original = self.memory.read(at, len(replacement))
+                self.memory.put(at, replacement)
+                self.assertFalse(component[b'valid']())
+                self.memory.put(at, original)
+                self.assertTrue(component[b'valid']())
+        self.memory.mapping(root, 40, {1242: 1})
+        self.assertFalse(component[b'valid']())
+
+    def test_component_header_partial_read_refuses_cached_validator(self):
+        component = self.native.component(self.native, 0x3326738, 40, 64, 20, 1242, 80, 48, 512)
+        at = component[b'root']+20
+        original = self.memory.read
+        self.lua.globals().read_fixture = lambda address, size: (
+            original(address, size)[:-1] if address == at and size == 68 else original(address, size))
+        self.assertFalse(component[b'valid']())
+
+    def test_unit_address_cache_rechecks_generation_object_and_accessor(self):
+        unit = 0x400002
+        obj, valid = self.native.unit_object(self.native, unit)
+        reads = self.memory.reads
+        cached, _ = self.native.unit_object(self.native, unit)
+        self.assertEqual(cached, obj)
+        self.assertEqual(self.memory.reads-reads, 8)
+        pointer = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        registry = pointer(self.memory.engine+0x1A100F0)
+        generations = pointer(registry+0xA0)
+        vtable = pointer(obj)
+        cases = [(generations+2, b'\2', 'unit_generation'),
+                 (obj+8, struct.pack('<I', 0x800002), 'unit_reference_mismatch'),
+                 (vtable+0xE8, struct.pack('<Q', self.memory.engine+0x123456), 'unit_accessor')]
+        for at, replacement, error in cases:
+            with self.subTest(error=error):
+                original = self.memory.read(at, len(replacement))
+                self.memory.put(at, replacement)
+                self.assertFalse(valid())
+                with self.assertRaisesRegex(Exception, error):
+                    self.native.unit_object(self.native, unit)
+                self.memory.put(at, original)
+                self.assertTrue(valid())
+
+    def test_collision_lifetime_keeps_live_and_static_hits(self):
+        self.assertTrue(self.native.collision_unit_live(self.native, 0x400002))
+        self.assertIsNone(self.native.collision_unit_live(self.native, 0))
+        self.assertIsNone(self.native.collision_unit_live(self.native, 0xFFFFFFFF))
+
+    def test_collision_lifetime_discards_only_retired_slots(self):
+        pointer = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        registry = pointer(self.memory.engine+0x1A100F0)
+        generations = pointer(registry+0xA0)
+        self.memory.put(generations+2, b'\2')
+        self.assertFalse(self.native.collision_unit_live(self.native, 0x400002))
+        self.memory.put(generations+2, b'\1')
+        self.memory.pointer(self.memory.unit_rows+16, 0)
+        self.assertFalse(self.native.collision_unit_live(self.native, 0x400002))
+        self.assertFalse(self.native.collision_unit_live(self.native, 0x400100))
+
+    def test_collision_lifetime_refuses_unstable_or_unreadable_registry(self):
+        pointer = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        registry = pointer(self.memory.engine+0x1A100F0)
+        for changed in (registry+0x88, pointer(registry+0xA0)+2, self.memory.unit_rows+16):
+            with self.subTest(changed=changed):
+                self.memory.changed = changed
+                self.memory.observed.clear()
+                with self.assertRaises(Exception):
+                    self.native.collision_unit_live(self.native, 0x400002)
+        self.memory.changed = None
+        self.memory.word(registry+0x98, 0x400001)
+        with self.assertRaises(Exception):
+            self.native.collision_unit_live(self.native, 0x400002)
+
+    def test_unit_cache_allows_registry_buffer_growth_but_not_slot_replacement(self):
+        obj, valid = self.native.unit_object(self.native, 0x400002)
+        pointer = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        registry = pointer(self.memory.engine+0x1A100F0)
+        rows = pointer(registry+0x88)
+        replacement = self.memory.allocate(self.memory.read(rows, 40)+bytes(40))
+        self.memory.pointer(registry+0x88, replacement)
+        self.memory.word(registry+0x98, 10)
+        self.assertTrue(valid())
+        self.assertEqual(self.native.unit_object(self.native, 0x400002)[0], obj)
+        self.memory.pointer(replacement+16, pointer(rows+24))
+        self.assertFalse(valid())
+        with self.assertRaisesRegex(Exception, 'unit_reference_mismatch'):
+            self.native.unit_object(self.native, 0x400002)
+
+    def test_unit_address_cache_capacity_is_bounded(self):
+        pointer = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        registry = pointer(self.memory.engine+0x1A100F0)
+        rows = self.memory.allocate(bytes(80*8))
+        generations = self.memory.allocate(bytes([1]*80))
+        self.memory.pointer(registry+0x88, rows)
+        self.memory.pointer(registry+0xA0, generations)
+        self.memory.word(registry+0x98, 80)
+        vtable = self.memory.allocate(bytes(0x100))
+        self.memory.pointer(vtable+0xE8, self.memory.engine+0x2BD870)
+        for index in range(10, 75):
+            obj = self.memory.allocate(struct.pack('<QI', vtable, 0x400000+index))
+            self.memory.pointer(rows+index*8, obj)
+            self.assertTrue(self.native.unit_object(self.native, 0x400000+index)[1]())
+        self.assertEqual(len(list(self.native[b'unit_cache'].keys())), 64)
+        self.assertEqual(len(self.native[b'unit_cache_order']), 64)
+        self.assertIsNone(self.native[b'unit_cache'][0x40000A])
+        self.assertTrue(self.native.unit_object(self.native, 0x40000A)[1]())
+        self.assertEqual(len(list(self.native[b'unit_cache'].keys())), 64)
+
+    def test_binding_cache_rescans_on_clock_reset_or_table_replacement(self):
+        self.lua.execute(b'channel.time=10; function channel:now() return self.time end')
+        self.native.bindings(self.native)
+        self.lua.globals().channel[b'time'] = 1
+        self.assertEqual(self.native.bindings(self.native)[b'backpack'], 84)
+        self.memory.pointer(self.memory.input + 686800, self.memory.allocate(bytes(256 * 328)))
+        with self.assertRaisesRegex(Exception, 'binding_missing_'):
+            self.native.bindings(self.native)
+
+    def test_snapshot_revalidation_still_checks_each_aggregate_owner(self):
+        sample = self.native.snapshot(self.native)
+        ptr = lambda at: struct.unpack('<Q', self.memory.read(at, 8))[0]
+        for rva, rows_at in ((0x3326738, 80), (0x33265E8, 80), (0x3326DC0, 64),
+                             (0x3326438, 72), (0x3326740, 96), (0x3326460, 80),
+                             (0x3326558, 0x48C0), (0x3326D30, 0x170), (0x3326D48, 88)):
+            address = ptr(self.memory.game + rva) + rows_at
+            original = ptr(address)
+            self.memory.pointer(address, self.memory.allocate(bytes(4096)))
+            self.assertFalse(sample[b'unit_valid']())
+            self.memory.pointer(address, original)
+            self.assertTrue(sample[b'unit_valid']())
+
     def test_missing_aim_mode_binding_is_refused_not_guessed(self):
         self.memory.word(self.memory.buckets, 0x50000)
         with self.assertRaisesRegex(Exception, 'binding_missing_aim_mode'):
@@ -857,6 +1039,31 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
         sample = self.native.snapshot(self.native)
         self.memory.word(self.memory.camera + 0x204, 999)
         self.assertFalse(sample[b'camera_valid']())
+
+
+def performance_workload():
+    """Fresh mock reads, not frame timings or live game access."""
+    fixture = RuntimeReaderTests()
+    fixture.setUp()
+    original = fixture.memory.read
+    counts = [0, 0]
+
+    def observed(at, size):
+        counts[0] += 1
+        counts[1] += size
+        return original(at, size)
+
+    fixture.lua.globals().read_fixture = observed
+    fixture.native.snapshot(fixture.native)
+    result = {'snapshot_reads': counts[0], 'snapshot_bytes': counts[1]}
+    counts[:] = [0, 0]
+    fixture.lua.execute(b'channel.time=0; function channel:now() return self.time end')
+    for frame in range(120):
+        fixture.lua.globals().channel[b'time'] = frame / 120
+        keys = fixture.native.bindings(fixture.native)
+        assert keys[b'valid']()
+    result['binding_reads_120_frames'], result['binding_bytes_120_frames'] = counts
+    return result
 
 
 if __name__ == '__main__':

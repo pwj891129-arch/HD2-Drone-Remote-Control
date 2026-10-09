@@ -10,6 +10,7 @@
 !/RELEASE-0.2.25.md
 !/RELEASE-0.2.26.md
 !/RELEASE-0.2.27.md
+!/RELEASE-0.2.33.md
 !/requirements-dev.txt
 !/manifest.json
 !/manifest-ko.json
@@ -30,9 +31,5 @@
 !/tools/observe_control.py
 !/tools/read_pose_sources.py
 !/tools/check_surface_query.py
-!/research/
-/research/*
-!/research/guard-dog-catalog.json
-!/research/native-body-arc-20261009.json
 __pycache__/
 *.pyc

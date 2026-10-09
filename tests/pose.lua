@@ -120,7 +120,10 @@ end
 p,ch,m,controls,original=relocate()
 before=ch.writes
 p:tick(yaw,false)
-check(m[500]==ch:floats(yaw) and ch.writes>before,'copied pose remains controllable after storage move')
+check(m[500]==ch:floats(yaw) and ch.writes==before,'unchanged copied pose needs no redundant write after storage move')
+local changed_yaw = {0,0,math.sin(0.8),math.cos(0.8)}
+p:tick(changed_yaw,false)
+check(m[500]==ch:floats(changed_yaw) and ch.writes>before,'copied pose remains controllable after storage move')
 p:clear()
 check(m[400]=='\1' and m[500]==original and m[200]=='\0','only refreshed buffers restored')
 check(ch.actor_writes==0,'storage refresh never touches actor')

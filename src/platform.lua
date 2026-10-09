@@ -1,4 +1,41 @@
 local Platform = {}
+function Platform.memory(ffi, copy)
+    local capacity,buffer,transferred = 256,ffi.new('unsigned char[?]',256),ffi.new('size_t[1]')
+    local values = ffi.new('float[4]')
+    local memory = {}
+    local function finite(n)
+        assert(type(n) == 'number' and n == n and math.abs(n) < 1000000, 'invalid_float')
+        return n
+    end
+    function memory:read(at,size)
+        if type(size) ~= 'number' or size < 1 or size > 262144 or size%1 ~= 0 then return nil end
+        if size > capacity then
+            while capacity < size do capacity = capacity*2 end
+            buffer = ffi.new('unsigned char[?]',capacity)
+        end
+        transferred[0] = 0
+        if not copy(at,buffer,size,transferred) or tonumber(transferred[0]) ~= size then return nil end
+        return ffi.string(buffer,size)
+    end
+    function memory:float(raw,offset)
+        assert(type(raw) == 'string' and type(offset) == 'number' and offset >= 0 and offset%1 == 0 and
+            #raw >= offset+4,'invalid_float_bytes')
+        ffi.copy(values,raw:sub(offset+1,offset+4),4)
+        return finite(tonumber(values[0]))
+    end
+    function memory:vector(raw,offset)
+        assert(type(raw) == 'string' and type(offset) == 'number' and offset >= 0 and offset%1 == 0 and
+            #raw >= offset+12,'invalid_float_bytes')
+        ffi.copy(values,raw:sub(offset+1,offset+12),12)
+        return {finite(tonumber(values[0])),finite(tonumber(values[1])),finite(tonumber(values[2]))}
+    end
+    function memory:floats(numbers)
+        assert(#numbers >= 1 and #numbers <= 4,'invalid_float_count')
+        for i=1,#numbers do values[i-1] = finite(numbers[i]) end
+        return ffi.string(values,#numbers*4)
+    end
+    return memory
+end
 Platform.detonation_guards = {
     {0x8CE2E0,'4053554883ec583b153359bb028bda0f29742440488be90f28f2'},
     {0x8CE368,'48897424708bf048c1e606480375604c89742450448bf0807e24000f85fe000000488b45504a8b0cf0f64114010f84d800'},
@@ -76,6 +113,9 @@ unsigned int DRC_MapVirtualKeyW(unsigned int,unsigned int) __asm__("MapVirtualKe
     local cursor, center, rect = ffi.new('DRC_POINT[1]'), ffi.new('DRC_POINT[1]'), ffi.new('DRC_RECT[1]')
     local input = ffi.new('DRC_INPUT[1]')
     local own_pid = kernel.DRC_GetCurrentProcessId()
+    local memory = Platform.memory(ffi,function(at,buffer,size,bytes)
+        return kernel.DRC_ReadProcessMemory(process,ffi.cast('void*',at),buffer,size,bytes) ~= 0
+    end)
     local channel = {}
     channel.base = tonumber(ffi.cast('uintptr_t', kernel.DRC_GetModuleHandleA('game.dll')))
     channel.exe_base = tonumber(ffi.cast('uintptr_t', kernel.DRC_GetModuleHandleA(nil)))
@@ -86,10 +126,7 @@ unsigned int DRC_MapVirtualKeyW(unsigned int,unsigned int) __asm__("MapVirtualKe
     end
     function channel:read(at, size)
         if not address(at, size) then return nil end
-        local buffer = ffi.new('unsigned char[?]', size)
-        if kernel.DRC_ReadProcessMemory(process, ffi.cast('void*', at), buffer, size, transferred) == 0 or
-            tonumber(transferred[0]) ~= size then return nil end
-        return ffi.string(buffer, size)
+        return memory:read(at,size)
     end
     function channel:write(at, value)
         if not address(at, #value) or #value > 64 then return false end
@@ -101,20 +138,13 @@ unsigned int DRC_MapVirtualKeyW(unsigned int,unsigned int) __asm__("MapVirtualKe
             tonumber(transferred[0]) == #value
     end
     function channel:float(raw, offset)
-        local value = ffi.new('float[1]')
-        ffi.copy(value, raw:sub(offset + 1, offset + 4), 4)
-        local n = tonumber(value[0]); assert(n == n and math.abs(n) < 1000000, 'invalid_float')
-        return n
+        return memory:float(raw,offset)
     end
     function channel:floats(values)
-        local array = ffi.new('float[?]', #values)
-        for i, value in ipairs(values) do
-            assert(value == value and math.abs(value) < 1000000, 'invalid_float'); array[i-1] = value
-        end
-        return ffi.string(array, #values * 4)
+        return memory:floats(values)
     end
     function channel:vector(raw, offset)
-        return {self:float(raw, offset), self:float(raw, offset+4), self:float(raw, offset+8)}
+        return memory:vector(raw,offset)
     end
     local function foreground()
         local window = user.DRC_GetForegroundWindow()

@@ -21,6 +21,12 @@ end)()
 local Cooperation = (function()
 -- @COOPERATION@
 end)()
+local Translations = (function()
+-- @TRANSLATIONS@
+end)()
+local Language = (function()
+-- @LANGUAGE@
+end)()
 local Options = (function()
 -- @OPTIONS@
 end)()
@@ -65,7 +71,7 @@ local Clock = (function()
 end)()
 local loader = rawget(_G,'CowboyBingusModLoader')
 if type(loader) ~= 'table' or loader.api ~= 1 or rawget(_G,'DroneRemoteControl') then return end
-local state = {version = '0.2.27',status = 'initializing',control_active = false,blocking_inputs = false,stopped = false}
+local state = {version = '0.2.33',status = 'initializing',control_active = false,blocking_inputs = false,stopped = false}
 rawset(_G,'DroneRemoteControl',state)
 local log
 if type(loader.open_log) == 'function' then
@@ -83,7 +89,7 @@ local last_report
 local function report(message)
     if message == last_report then return end
     last_report = message
-    local line = '[DroneRemoteControl 0.2.27] '..message
+    local line = '[DroneRemoteControl 0.2.33] '..message
     print(line)
     -- The loader file can buffer writes without a working flush. Close event appends.
     if log_path then
@@ -102,7 +108,7 @@ local function initialize()
     assert(s.Unit and s.World and s.Window and s.Mouse and s.Vector3 and s.Quaternion,'engine_api_unavailable')
     channel = Platform.new(require('ffi'),B,s)
     clock = Clock.new(function() return channel:now() end)
-    options = Options.new(_G,channel,B,report)
+    options = Options.new(_G,channel,B,report,Language,Translations)
     reader = Reader.new(channel,B,Flight,options,BodyResources,BodyParts)
     local seeker_reader = SeekerReader.new(reader,channel,B)
     function reader:seeker_snapshot(ticket) return seeker_reader:snapshot(ticket) end
@@ -174,7 +180,13 @@ report('G-50/G-60 Seeker: aim-mode + quick throw, or equipped throwable + aim-mo
 report('Allow Multiplayer defaults OFF for both modes; ON is experimental and retains own-drone checks')
 report('Seeker: 30s lifetime; no range limit; explosion releases native AI and hides exploded meshes; camera alone holds for 0.7s')
 report('Nonphysical surface clearance: 1m; private native probes every 50ms; unavailable query holds flight')
+report('Recovery: broad terrain overlap retries a 2cm centre probe; retired unit generations ignored; persistent backpack surface wait returns native AI after 2s')
+report('Backpack: outward flight limited at 100m; external overshoot gets 5s to return; empty feed confirmed for 0.2s; owned AI/aim resets recover without recall')
+report('Performance: HUD refresh capped at 100ms; binding discovery every 250ms with live entry checks; idle drone discovery skipped')
+report('K-9 performance: display timer sampled every 100ms; fresh component headers read in batches; 64 validated unit-address cache entries')
+report('In-game option translations: 14 locales in one add-on; Text Language polled every 250ms; English fallback')
 report('Seeker surface clearance: 0.5m; no impact-detonation trigger added')
 report('Seeker: 0.5s stable deployment wait; in-game homing assist defaults OFF; manual input takes priority')
 report('Seeker: exact owned storage relocation renews control; unknown ownership/value changes still exit')
 report('Body clearance: projectile hit shapes, 1cm; own character/backpack excluded before geometry checks; reverse probes recover initial overlap; wall/terrain clearance unchanged')
+report('Surface recovery: collision identity independent of drone transform accessors; inactive/recycled native Actor handles ignored; all-hit overflow retries 128 rows')

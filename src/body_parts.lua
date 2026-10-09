@@ -17,7 +17,7 @@ Parts.engine_guards = {
 }
 function Parts.new(reader,B)
     local channel,verified = reader.channel,false
-    local p = {}
+    local p = {definitions = {},definition_count = 0}
     function p:verify()
         for _,pair in ipairs({{Parts.game_guards,channel.base},{Parts.engine_guards,channel.exe_base}}) do
             for _,guard in ipairs(pair[1]) do
@@ -30,6 +30,15 @@ function Parts.new(reader,B)
     function p:definition(meta)
         local resource = meta.identity:sub(1,8)
         local table_at = reader:ptr(meta.authored+0xF12B78)
+        if self.authored ~= meta.authored or self.table_at ~= table_at then
+            self.authored,self.table_at = meta.authored,table_at
+            self.definitions,self.definition_count = {},0
+        end
+        local cached = self.definitions[resource]
+        if cached and reader:raw(cached.slot,16) == cached.identity then
+            assert(reader:ptr(meta.authored+0xF12B78) == table_at,'body_part_definition_changed')
+            return cached.names
+        end
         local index = 0
         -- Byte-wise modulo avoids losing bits of the 64-bit resource name.
         for i = 8,1,-1 do index = (index*256+resource:byte(i))%1002 end
@@ -53,6 +62,11 @@ function Parts.new(reader,B)
                 end
                 assert(reader:ptr(meta.authored+0xF12B78) == table_at and
                     reader:raw(slot,16) == raw,'body_part_definition_changed')
+                if self.definition_count >= 64 then
+                    self.definitions,self.definition_count = {},0
+                end
+                if not self.definitions[resource] then self.definition_count = self.definition_count+1 end
+                self.definitions[resource] = {slot = slot,identity = raw,names = names}
                 return names
             end
             if raw:sub(1,8) == string.rep('\0',8) then return {} end
@@ -72,17 +86,30 @@ function Parts.new(reader,B)
         local stride,reference_at,data_at = packed%65536,math.floor(packed/65536)%256,math.floor(packed/16777216)
         assert(mask >= 1 and mask <= 131071 and mask+1 == count,'body_part_registry_mask')
         local index = actor%(mask+1)
-        assert(count <= 131072 and index < count and stride >= 32 and stride <= 256 and
-            reference_at+4 <= stride and data_at+28 <= stride and bit.band(actor,live_mask) ~= 0,
-            'body_part_registry_bounds')
+        if not (count <= 131072 and index < count and stride >= 32 and stride <= 256 and
+            reference_at+4 <= stride and data_at+28 <= stride and live_mask ~= 0) then
+            error(string.format('body_part_registry_bounds: actor=%08x count=%d stride=%d ref=%d data=%d live=%08x',
+                actor,count,stride,reference_at,data_at,live_mask),0)
+        end
+        local function registry_valid()
+            return reader:raw(manager,64) == header and meta.valid()
+        end
+        -- The native Actor lookup returns null for inactive/recycled handles.
+        -- They are not live damage parts and must not freeze an entire scan.
+        if bit.band(actor,live_mask) == 0 then
+            assert(registry_valid(),'body_part_actor_changed')
+            return false
+        end
         local address = B.ptr(header)+index*stride
         local bytes = reader:raw(address,stride)
-        assert(B.word(bytes,reference_at) == actor and B.word(bytes,data_at+12) == unit,
-            'body_part_actor_changed')
+        if B.word(bytes,reference_at) ~= actor then
+            assert(registry_valid() and reader:raw(address,stride) == bytes,'body_part_actor_changed')
+            return false
+        end
+        assert(B.word(bytes,data_at+12) == unit,'body_part_actor_changed')
         local name = B.word(bytes,data_at+24)
-        if not meta.parts then meta.parts = self:definition(meta) end
-        assert(reader:raw(manager,64) == header and reader:raw(address,stride) == bytes and
-            meta.valid(),'body_part_actor_changed')
+        meta.parts = self:definition(meta)
+        assert(registry_valid() and reader:raw(address,stride) == bytes,'body_part_actor_changed')
         return meta.parts[name] == true,name
     end
     return p

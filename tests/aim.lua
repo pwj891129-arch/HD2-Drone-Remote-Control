@@ -37,7 +37,7 @@ check(channel.writes==0 and not aim.lease,'automatic mode leaves native targetin
 local result=tick(aim,snapshot,{0,0,0},{0,1,0},false)
 check(memory[100]==B.u32(2),'manual mode skips enemy acquisition and uses explicit point')
 check(memory[200]==channel:floats({0,100,0}),'settled forward world point')
-check(#aim.lease.items==2,'only mode and explicit target are configuration leases')
+check(#aim.lease.items==3,'mode, explicit target and motor activation are leased')
 aligned(memory)
 check(result.body_rotation[1]==0 and result.body_rotation[2]==0,'lower gun pitch is not applied to body root')
 result=tick(aim,snapshot,{0,0,0},{1,0,0},false)
@@ -55,10 +55,11 @@ tick(aim,snapshot,{}, {},true)
 check(memory[100]==B.u32(0) and memory[200]==string.rep('\0',12),'live ON restores native capture')
 check(not aim.lease and not aim.direction,'automatic mode discards stale manual interpolation')
 check(memory[300]==before_motor,'producer-owned outputs are not restored to stale pre-control targets')
+check(memory[400]=='\0','automatic mode releases manual motor activation')
 tick(aim,snapshot,{0,0,0},{0,1,0},false)
 check(memory[100]==B.u32(2),'live OFF reacquires manual aim')
 aim:clear()
-check(memory[100]==B.u32(0),'exit restores enemy acquisition')
+check(memory[100]==B.u32(0) and memory[400]=='\0','exit restores acquisition and motor activation')
 local writes=channel.writes;aim:clear()
 check(channel.writes==writes,'repeat cleanup is harmless')
 
@@ -126,7 +127,8 @@ snapshot.targeting.invalid=true
 local before=channel.writes
 check(not pcall(tick,aim,snapshot,{0,0,0},{1,0,0},true),'changed identity refused even for ON')
 aim:clear()
-check(channel.writes==before and memory[100]==B.u32(2),'reallocated target never written on exit')
+check(channel.writes==before+1 and memory[100]==B.u32(2) and memory[400]=='\0',
+    'reallocated target is untouched while independently valid motor activation is restored')
 
 for _,failed in ipairs({100,200,300,400,500}) do
     aim,channel,memory,snapshot=fixture();channel.failed=failed
@@ -158,4 +160,40 @@ check(memory[300]==outputs[1] and memory[400]==outputs[2] and memory[500]==outpu
     'fallback never writes optional model or fire-output addresses')
 tick(aim,snapshot,{0,0,0},{0,1,0},true)
 check(memory[100]==B.u32(0) and not aim.lease,'automatic mode restores fallback targeting')
+aim,channel,memory,snapshot=fixture()
+tick(aim,snapshot,{0,0,0},{0,1,0},false)
+memory[100],memory[200],memory[400]=B.u32(0),string.rep('\0',12),'\0'
+tick(aim,snapshot,{0,0,0},{1,0,0},false)
+check(memory[100]==B.u32(2) and memory[400]=='\1','owned native aim reset is recaptured without recall')
+aligned(memory)
+aim:clear()
+check(memory[400]=='\0','recalled drone does not keep manual LookAt activation')
+tick(aim,snapshot,{0,0,0},{0,1,0},false)
+aligned(memory)
+aim:clear()
+check(memory[100]==B.u32(0) and memory[400]=='\0','repeated recall/reentry leaves clean aim state')
+
+aim,channel,memory,snapshot=fixture()
+snapshot.ownership_key='hot-dog-owner'
+tick(aim,snapshot,{0,0,0},{0,1,0},false)
+local old_target,old_motor=snapshot.targeting,snapshot.aim_motor
+old_target.invalid,old_motor.invalid=true,true
+memory[600],memory[700],memory[800]=memory[100],memory[200],memory[400]
+snapshot.targeting={flags=600,position=700,valid=function()return true end}
+snapshot.aim_motor={engaged=800,valid=function()return true end}
+aim:rebind(snapshot);aim:clear()
+check(memory[600]==B.u32(0) and memory[800]=='\0','same-owner relocated activation is restored on exit')
+check(memory[100]==B.u32(2) and memory[400]=='\1','obsolete output storage is never written during cleanup')
+aim,channel,memory,snapshot=fixture()
+memory[400]='\1'
+tick(aim,snapshot,{0,0,0},{0,1,0},false)
+memory[400]='\0'
+tick(aim,snapshot,{0,0,0},{1,0,0},false)
+check(memory[400]=='\1','native motor reset is recoverable even if initially active')
+aim:clear()
+check(memory[400]=='\0','latest native motor reset is preserved on exit')
+aim,channel,memory,snapshot=fixture()
+memory[400]='\2'
+check(not pcall(tick,aim,snapshot,{0,0,0},{0,1,0},false) and channel.writes==0,
+    'unknown activation flags refuse before partial capture')
 return checks

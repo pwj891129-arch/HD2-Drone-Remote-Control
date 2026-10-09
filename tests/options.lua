@@ -1,10 +1,11 @@
-local Options,B = ...
+local Options,B,Language,texts = ...
 local checks=0
 local function check(value,message) assert(value,message);checks=checks+1 end
 local function fixture()
-    local env,channel,logs={},{base=0x10000000,code='EN'},{}
+    local env,channel,logs={},{base=0x10000000,code='EN',reads=0},{}
     local function ptr(value) return B.u32(value)..B.u32(0) end
     function channel:read(at,size)
+        self.reads=self.reads+1
         if self.fail then return nil end
         if at==self.base+0x3326340 then return ptr(0x70000000) end
         if at==0x70000000+705712 then return B.u32(self.index or 0) end
@@ -12,7 +13,7 @@ local function fixture()
         if at==0x71000000+8 then return ptr(0x72000000) end
         if at==0x72000000 then return self.code..string.rep('\0',size-#self.code) end
     end
-    local options=Options.new(env,channel,B,function(message)logs[#logs+1]=message end)
+    local options=Options.new(env,channel,B,function(message)logs[#logs+1]=message end,Language,texts)
     local function provider(aim,homing,multiplayer)
         local menu={api=1,version=3,registers=0,reads=0,specs={},callbacks={},
             values={[Options.ID]=aim,[Options.SEEKER_ID]=homing,[Options.MULTIPLAYER_ID]=multiplayer == true}}
@@ -71,22 +72,38 @@ options:tick(0.26)
 check(menu.reads==3,'poll does not run every frame')
 options:tick(0.5)
 check(menu.reads==6 and menu.registers==3,'each option registers once with bounded polling')
-for _,code in ipairs({'KR','KO','ko-KR','ko_kr'}) do
-    channel.code=code
-    check(aim.label()~='Auto Aim' and aim.label():find('[\128-\255]'),'Korean aim label uses UTF-8')
-    check(homing.label()~='Seeker Homing Assist' and homing.description():find('[\128-\255]'),'Korean Seeker labels use UTF-8')
-    check(multiplayer.label()~='Allow Multiplayer' and multiplayer.description():find('[\128-\255]'),'Korean multiplayer labels use UTF-8')
+local translated,_,localized,install=fixture()
+localized.code='KR'
+translated:tick(0)
+local localized_menu=install(true,true,true)
+translated:tick(0.25)
+local localized_aim=localized_menu.specs[Options.ID]
+local localized_homing=localized_menu.specs[Options.SEEKER_ID]
+local localized_multi=localized_menu.specs[Options.MULTIPLAYER_ID]
+local language_time=0.25
+for _,code in ipairs({'KR','KO','ko-KR','ko_kr','FR','JP','TW','BR','KR','unknown'}) do
+    localized.code=code;language_time=language_time+0.25;translated:tick(language_time)
+    local expected=texts[Language.resolve(code)]
+    check(localized_aim.mod()==expected.mod and localized_aim.label()==expected.label and
+        localized_aim.description()==expected.description,'mod title and aim text follow selected language')
+    check(localized_homing.label()==expected.seeker_label and localized_homing.description()==expected.seeker_description,
+        'Seeker text follows language changes')
+    check(localized_multi.label()==expected.multiplayer_label and localized_multi.description()==expected.multiplayer_description,
+        'multiplayer text follows language changes')
+    check(localized_menu.registers==3 and translated.auto_aim and translated.seeker_homing and translated.allow_multiplayer,
+        'language changes never re-register options or discard saved values')
 end
-channel.code='FR'
-check(aim.label()=='Auto Aim' and homing.label()=='Seeker Homing Assist' and multiplayer.label()=='Allow Multiplayer',
-    'unsupported language falls back to English')
-channel.code='KR'
-check(aim.label()~='Auto Aim' and homing.label()~='Seeker Homing Assist','return to Korean updates both dynamically')
-channel.fail=true
-check(aim.label()=='Auto Aim','unavailable language falls back safely')
-channel.fail=nil;channel.index=15
-check(aim.label()=='Auto Aim','out-of-range language index never followed')
-channel.index=nil
+localized.fail=true;language_time=language_time+0.25;translated:tick(language_time)
+check(localized_aim.label()==texts.en.label,'unavailable language falls back safely')
+localized.fail=nil;localized.index=15;language_time=language_time+0.25;translated:tick(language_time)
+check(localized_aim.label()==texts.en.label,'out-of-range language index never followed')
+localized.index=nil;localized.code='KR';language_time=language_time+0.25;translated:tick(language_time)
+check(localized_aim.label()==texts.ko.label,'Korean is restored after read failures')
+local language_reads=localized.reads
+for _=1,1000 do
+    localized_aim.mod();localized_aim.label();localized_aim.description();localized_homing.label();localized_multi.label()
+end
+check(localized.reads==language_reads,'rendering dynamic labels never re-reads game memory')
 local old=menu
 menu=provider(false,false);options:tick(0.75)
 check(not options.auto_aim and not options.seeker_homing and not options.allow_multiplayer and menu.registers==3,

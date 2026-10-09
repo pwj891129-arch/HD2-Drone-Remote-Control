@@ -1,4 +1,4 @@
-local Engine = {}
+local Engine = {hud_interval = 0.1}
 function Engine.new(s, Flight, report, channel)
     local adapter = {screen = nil, texts = {}}
     local V, U, W = s.Vector3, s.Unit, s.World
@@ -17,6 +17,11 @@ function Engine.new(s, Flight, report, channel)
         return result
     end
     local function world_position(unit) return vector(U.world_position(unit,adapter.node)) end
+    local function parent_graph(snapshot)
+        return snapshot.graph_valid() and (snapshot.kind == 'seeker' or
+            type(snapshot.pack_unit) == 'number' and type(snapshot.actor_unit) == 'number' and
+            snapshot.pack_parent_unit == snapshot.actor_unit and snapshot.gun_parent_unit == snapshot.drone_unit)
+    end
     local function note(message) if report then report('engine: '..message) end end
     local function resolve(resource, goid, reference)
         assert(type(resource) == 'string' and #resource == 16 and not resource:find('[^0-9a-f]') and
@@ -88,10 +93,7 @@ function Engine.new(s, Flight, report, channel)
             channel:unit_ref(self.gun) == snapshot.gun_unit and snapshot.unit_valid(), 'unit_handle_changed')
         local position = world_position(self.drone)
         vector(U.local_position(self.drone,self.node))
-        assert(snapshot.graph_valid() and (snapshot.kind == 'seeker' or
-            type(snapshot.pack_unit) == 'number' and type(snapshot.actor_unit) == 'number' and
-            snapshot.pack_parent_unit == snapshot.actor_unit and snapshot.gun_parent_unit == snapshot.drone_unit),
-            'unit_parent_graph_changed')
+        assert(parent_graph(snapshot), 'unit_parent_graph_changed')
         local parented = snapshot.drone_parent_unit ~= nil
         local distance = Flight.distance(position,snapshot.actor_position)
         return {docked = snapshot.kind ~= 'seeker' and snapshot.drone_parent_unit == snapshot.pack_unit,
@@ -140,12 +142,14 @@ function Engine.new(s, Flight, report, channel)
             norm = norm+value*value
         end
         assert(math.abs(norm-1) < 0.001, 'flight_rotation_not_unit')
-        assert(snapshot.node_index == self.node and U.alive(self.drone) and U.alive(self.gun) and
+        assert(snapshot.node_index == self.node and snapshot.token == self.token and
+            U.alive(self.drone) and U.alive(self.gun) and
             self.world == s.Application.main_world() and
             channel:unit_ref(self.drone) == snapshot.drone_unit and
             channel:unit_ref(self.gun) == snapshot.gun_unit and snapshot.unit_valid(),
             'unit_handle_changed')
-        assert(self:observe(snapshot).free, 'drone_parented')
+        -- The controller already observed position; writes need fresh identity/parent guards, not another pose query.
+        assert(parent_graph(snapshot) and snapshot.drone_parent_unit == nil, 'drone_parented')
         assert(snapshot.movement and snapshot.movement.valid(), 'drone_movement_changed')
         if self.trace_move then note('first move: Quaternion.from_elements') end
         -- Quaternion(...) is axis-angle; numeric components require from_elements.
@@ -188,15 +192,19 @@ function Engine.new(s, Flight, report, channel)
         note('exploded Seeker meshes hidden; native damage/effects/destruction untouched')
         return true
     end
-    function adapter:hud(snapshot, distance, automatic, surface_ready)
+    function adapter:hud(snapshot, distance, automatic, surface_ready, signal)
+        local now = channel and channel.now and channel:now()
+        if now and self.hud_after and now >= self.hud_time and now < self.hud_after then return end
+        if now then self.hud_time,self.hud_after = now,now+Engine.hud_interval end
         local gui_api, color = s.Gui, s.Color
-        assert(gui_api and color and s.Vector2 and s.Application.can_get('font','core/performance_hud/debug') and
-            s.Application.can_get('material','core/performance_hud/debug'), 'hud_api_unavailable')
+        assert(gui_api and color and s.Vector2, 'hud_api_unavailable')
         local worlds = s.Application.worlds()
         local live = false
         for _, world in pairs(worlds) do if world == self.gui_world then live = true end end
-        if not live then self.screen, self.texts = nil,{} end
+        if not live then self.screen,self.texts,self.gui_world,self.hud_signature = nil,{},nil,nil end
         if not self.screen then
+            assert(s.Application.can_get('font','core/performance_hud/debug') and
+                s.Application.can_get('material','core/performance_hud/debug'), 'hud_api_unavailable')
             for _, world in pairs(worlds) do
                 if world ~= self.world then self.gui_world = world; break end
             end
@@ -205,8 +213,6 @@ function Engine.new(s, Flight, report, channel)
             self.screen = W.create_screen_gui(self.gui_world,'scale',1,1)
             assert(self.screen and self.screen ~= 0, 'hud_create_failed')
         end
-        for _, id in ipairs(self.texts) do gui_api.destroy_text(self.screen,id) end
-        self.texts = {}
         local width, height = gui_api.resolution()
         assert(type(width) == 'number' and type(height) == 'number' and width >= 480 and height >= 320,
             'hud_resolution')
@@ -222,7 +228,29 @@ function Engine.new(s, Flight, report, channel)
                 snapshot.homing_active and 'HOMING ACTIVE' or 'HOMING ON / MANUAL')
         end
         if surface_ready == false then label = label..'   SURFACE WAIT' end
+        if signal then label = label..'   '..signal end
         local tint = snapshot.kind == 'seeker' and {255,240,240,220} or Flight.color(distance)
+        local arc_label,arc_tint
+        if snapshot.drone_name == 'K-9' then
+            local arc = snapshot.arc_readiness
+            if arc then
+                local filled = math.floor(arc.percent/5)
+                local bar = string.rep('|',filled)..string.rep('.',20-filled)
+                arc_label = string.format('ARC READY %d%% [%s]   WAIT %.1fs',math.floor(arc.percent),bar,arc.remaining)
+                arc_tint = arc.ready and {255,100,240,140} or {255,255,210,90}
+            else
+                arc_label,arc_tint = 'ARC READY --',{255,190,190,190}
+                if self.arc_reason ~= snapshot.arc_reason then
+                    note('K-9 readiness unavailable: '..tostring(snapshot.arc_reason))
+                end
+            end
+            self.arc_reason = snapshot.arc_reason
+        end
+        local signature = table.concat({width,height,label,table.concat(tint,','),
+            arc_label or '',arc_tint and table.concat(arc_tint,',') or ''},':')
+        if signature == self.hud_signature then return end
+        for _, id in ipairs(self.texts) do gui_api.destroy_text(self.screen,id) end
+        self.texts = {}
         local font = 'core/performance_hud/debug'
         if self.trace_hud then note('first HUD: Gui.text_extents') end
         if self.trace_hud then note('first HUD: Gui.text') end
@@ -236,21 +264,8 @@ function Engine.new(s, Flight, report, channel)
                 color(tone[1],tone[2],tone[3],tone[4])), 'hud_text_failed')
         end
         line(label,y,tint)
-        if snapshot.drone_name == 'K-9' then
-            local arc = snapshot.arc_readiness
-            if arc then
-                local filled = math.floor(arc.percent/5)
-                local bar = string.rep('|',filled)..string.rep('.',20-filled)
-                line(string.format('ARC READY %d%% [%s]   WAIT %.1fs',math.floor(arc.percent),bar,arc.remaining),
-                    y-32,arc.ready and {255,100,240,140} or {255,255,210,90})
-            else
-                line('ARC READY --',y-32,{255,190,190,190})
-                if self.arc_reason ~= snapshot.arc_reason then
-                    note('K-9 readiness unavailable: '..tostring(snapshot.arc_reason))
-                end
-            end
-            self.arc_reason = snapshot.arc_reason
-        end
+        if arc_label then line(arc_label,y-32,arc_tint) end
+        self.hud_signature = signature
         if self.trace_hud then note('first HUD: complete'); self.trace_hud = false end
     end
     function adapter:clear()
@@ -265,6 +280,7 @@ function Engine.new(s, Flight, report, channel)
         self.drone,self.gun,self.world,self.gui_world,self.node,self.token = nil,nil,nil,nil,nil,nil
         self.trace_move,self.trace_hud = nil,nil
         self.arc_reason = nil
+        self.hud_signature,self.hud_time,self.hud_after = nil,nil,nil
     end
     return adapter
 end

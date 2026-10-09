@@ -82,25 +82,29 @@ end
 function Avoidance.new(query,report)
     local sensor = {}
     function sensor:clear()
-        self.sample,self.token,self.last_reason,self.after,self.last_time = nil,nil,nil,nil,nil
+        self.sample,self.token,self.last_reason,self.after,self.last_time,self.wait_since = nil,nil,nil,nil,nil,nil
     end
     function sensor:move(snapshot,position,velocity,dt,now,previous_velocity)
         vector(position); vector(velocity)
         assert(finite(now) and now >= 0, 'invalid_surface_time')
         if self.token ~= snapshot.token then self:clear(); self.token = snapshot.token end
+        if self.wait_since and now < self.wait_since then self.wait_since = nil end
         local sample = self.sample
         local speed = length(velocity)
         local direction = speed > 0.01 and {velocity[1]/speed,velocity[2]/speed,velocity[3]/speed} or nil
-        local turn = direction and (not sample or not sample.direction or dot(direction,sample.direction) < 0.96)
-        local changed = not sample or length(minus(position,sample.position)) > 0.65
+        if sample and length(minus(position,sample.position)) > 0.65 then
+            self.sample,sample = nil,nil
+        end
         local due = not self.after or now < self.last_time or now >= self.after
-        if due or sample and (turn or changed) then
+        -- Six axial probes cover turns too; never burst native sweeps on mouse input.
+        if due then
             self.after,self.last_time = now+Avoidance.interval,now
             local ok,contacts,reason = pcall(query.scan,query,snapshot,position,
                 Avoidance.directions(velocity),Avoidance.reach)
             if ok and contacts then
                 self.sample = {contacts = contacts,time = now,position = {unpack(position)},direction = direction}
                 sample = self.sample
+                self.wait_since = nil
                 reason = 'ready'
                 for _,hit in ipairs(contacts) do
                     if hit.recovered then reason = 'ready (initial overlap recovered)'; break end
@@ -109,6 +113,7 @@ function Avoidance.new(query,report)
                 reason = ok and reason or tostring(contacts)
                 -- A failed query must not authorize motion using stale empty space.
                 self.sample,sample = nil,nil
+                self.wait_since = self.wait_since or now
             end
             if reason ~= self.last_reason then
                 self.last_reason = reason
@@ -116,8 +121,10 @@ function Avoidance.new(query,report)
             end
         end
         if not sample or now < sample.time or now-sample.time > Avoidance.max_age then
+            self.wait_since = self.wait_since or now
             return {unpack(position)},{0,0,0,0},{0,0,0}
         end
+        self.wait_since = nil
         return Avoidance.step(position,velocity,sample.contacts,dt,previous_velocity,
             snapshot.kind == 'seeker' and 0.5 or Avoidance.clearance)
     end

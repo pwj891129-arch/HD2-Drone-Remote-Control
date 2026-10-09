@@ -69,24 +69,30 @@ check(calls == 1 and near(v[1],1),'first scan authorizes free movement')
 p,command,v = sensor:move(snapshot,{0.02,0,0},{1,0,0},0.02,1.01)
 check(calls == 1,'same-direction samples are reused for fifty milliseconds')
 sensor:move(snapshot,{0,0,0},{0,1,0},0.02,1.02)
-check(calls == 2,'sharp movement direction changes refresh sensing immediately')
-sensor:move(snapshot,{1,0,0},{0,1,0},0.02,1.03)
-check(calls == 3,'external movement invalidates distant surface samples')
+check(calls == 1,'sharp turns reuse six-axis coverage without native query bursts')
+p,command,v = sensor:move(snapshot,{1,0,0},{0,1,0},0.02,1.03)
+check(calls == 1 and command[4] == 0,'external movement drops stale space and holds until the next scheduled scan')
 fail = true
 p,command,v = sensor:move(snapshot,{1,0,0},{0,1,0},0.02,1.1)
 check(command[4] == 0 and near(p[1],1),'busy query pauses flight, not the control session')
 sensor:move(snapshot,{1,0,0},{0,1,0},0.02,1.11)
-check(calls == 4,'failed queries are rate-limited too')
+check(calls == 2,'failed queries are rate-limited too')
 fail = false
 sensor:move(snapshot,{1,0,0},{0,1,0},0.02,1.2)
-check(calls == 5 and #events == 3,'query recovery resumes movement and reports once')
+check(calls == 3 and #events == 3,'query recovery resumes movement and reports once')
 contacts = wall
 sensor:move({token = 'new-rover'},{4,0,0},{1,0,0},0.02,1.21)
-check(calls == 6,'owner changes discard cached empty space')
+check(calls == 4,'owner changes discard cached empty space')
 p,command,v = sensor:move({token = 'new-rover'},{4,0,0},{1,0,0},0.02,0.5)
-check(calls == 7 and command[4] == 0,'clock reset requires a fresh query')
+check(calls == 5 and command[4] == 0,'clock reset requires a fresh query')
 sensor:clear()
 check(sensor.sample == nil and sensor.token == nil and sensor.after == nil,'cleanup drops all query state')
+local fast_calls = 0
+local fast_sensor = Avoidance.new({scan = function() fast_calls = fast_calls+1; return {} end},function() end)
+for frame = 0,239 do
+    fast_sensor:move(snapshot,{0,0,0},frame%2 == 0 and {1,0,0} or {0,1,0},1/240,frame/240)
+end
+check(fast_calls <= 20,'240Hz alternating controls still use at most twenty collision scans per second')
 query.scan = function() error('world disappeared') end
 p,command,v = sensor:move(snapshot,{1,2,3},{8,0,0},0.05,2)
 check(command[4] == 0 and near(p[2],2),'query exceptions never authorize movement')

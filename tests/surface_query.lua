@@ -59,7 +59,8 @@ end
 local function invoke(world,shape,mode,types,filter,descriptor,out,capacity)
     calls = calls+1
     check(world == 1 and shape == 2 and mode == 2 and types == 5 and
-        (filter == Query.filters[1] or filter == Query.filters[2]) and capacity == 32,
+        (filter == Query.filters[1] or filter == Query.filters[2]) and
+        (capacity == 32 or capacity == 128),
         'verified worker arguments and projectile/geometry filters')
     local d = ffi.cast('uint64_t *',descriptor)
     local origin = ffi.cast('float *',tonumber(d[0]))
@@ -70,8 +71,10 @@ local function invoke(world,shape,mode,types,filter,descriptor,out,capacity)
     check(rotation[0] == 0 and rotation[1] == 0 and rotation[2] == 0 and rotation[3] == 1,
         'private identity query rotation')
     local expected_extent = filter == Query.filters[2] and 0.001 or 0.2
-    check(math.abs(extent[0]-expected_extent) < 0.0000001 and extent[0] == extent[1] and extent[1] == extent[2],
-        'tiny projectile probe and unchanged terrain probe')
+    check((math.abs(extent[0]-expected_extent) < 0.0000001 or
+        filter == Query.filters[1] and math.abs(extent[0]-0.02) < 0.0000001) and
+        extent[0] == extent[1] and extent[1] == extent[2],
+        'terrain overlap alone can use a smaller centre probe')
     check(ffi.cast('uint32_t *',descriptor)[12] == 50 and ffi.cast('uint32_t *',descriptor)[13] == 0,
         'generation-tagged owned drone ignored')
     local travel,from,dir = 0,{},{}
@@ -81,7 +84,7 @@ local function invoke(world,shape,mode,types,filter,descriptor,out,capacity)
     end
     check(math.abs(travel-16) < 0.001,'forward/recovery casts remain bounded to four metres')
     if changed then memory[channel.base+0x346BFA0] = ptr(0x30001000) end
-    local hit = scenario and scenario(filter,from,dir,calls)
+    local hit = scenario and scenario(filter,from,dir,calls,tonumber(extent[0]),capacity)
     if hit then ffi.copy(out,hit.bytes,math.min(#hit.bytes,capacity*44)); return hit.count end
     return 0
 end
@@ -162,7 +165,7 @@ for _,body in ipairs({false,true}) do
         check(#contacts == 1 and contacts[1].recovered and math.abs(contacts[1].position[1]-0.2) < 0.00001 and
             contacts[1].normal[1] == 1 and not contacts[1].character_body,
             'solid initial overlap finds nearest exit, not opposing placeholder planes')
-        check(calls == 18,'one reverse probe at most per solid initial-overlap hit')
+        check(calls == 24,'narrow centre checks and bounded reverse probes recover real solid interiors')
     end
 end
 scenario = function(filter,_,_,call)
@@ -205,7 +208,7 @@ scenario = function(filter,from)
     end
 end
 local busy,reason = scan()
-check(busy == nil and reason:find('surface_overlap_unresolved',1,true) and calls <= 28,
+check(busy == nil and reason:find('surface_overlap_unresolved',1,true) and calls <= 34,
     'many overlapping actors cannot exceed the bounded reverse query budget')
 scenario = function(filter,from,dir)
     if filter == Query.filters[1] then
@@ -227,12 +230,52 @@ check(not pcall(scan),'failed identity classification cannot authorize movement'
 classify_fail = false
 for _,bad in ipairs({result({20,0,2},{-1,0,0},61),result({2,0,2},{0,0,0},61),
     result({2,0,2},{1,0,0},61),result({-2,0,2},{-1,0,0},61),
-    result({2,0,2},{-1,0,0},61,2,123,33),result({0/0,0,2},{-1,0,0},61),
+    result({2,0,2},{-1,0,0},61,2,123,129),result({0/0,0,2},{-1,0,0},61),
     result({2,0,2},{-1,0,0},61,-5),result({2,0,2},{-1,0,0},61,0/0),
     result({0,0,0},{0,0,0},61,-0.25)}) do
     scenario = function() return bad end
     check(not pcall(scan),'malformed non-overlap result rejected')
 end
+scenario = nil
+scenario = function(filter,_,dir)
+    if dir[1] == 1 and filter == Query.filters[1] then
+        local hits = {}
+        for i=1,44 do hits[i] = result({0,0,0},{0,0,0},60,0,999) end
+        hits[45] = result({2,0,2},{-1,0,0},61)
+        return results(unpack(hits))
+    end
+end
+contacts = scan()
+check(#contacts == 1 and contacts[1].unit == 61 and calls == 13,
+    'overflow retry retains the wall after more than 32 discarded body hulls')
+scenario = function(_,_,dir,_,_,capacity)
+    if dir[1] == 1 then return result({2,0,2},{-1,0,0},61,2,123,capacity+1) end
+end
+check(not pcall(scan) and calls == 2,'second overflow refuses flight without consuming partial rows')
+scenario = nil
+scenario = function(filter,from,_,_,extent)
+    if filter == Query.filters[1] and from[1] == 0 and extent > 0.1 then
+        return result({0,0,0},{0,0,0},61,0)
+    end
+end
+contacts = scan()
+check(#contacts == 0 and calls == 18,'broad-box-only overlap does not pin a drone whose centre is clear')
+scenario = function(filter,from,dir,_,extent)
+    if filter == Query.filters[1] and from[1] == 0 and dir[1] > 0 then
+        if extent > 0.1 then return result({0,0,0},{0,0,0},61,0) end
+        return result({0.1,0,2},{-1,0,0},61,0.1)
+    end
+end
+contacts = scan()
+check(#contacts == 1 and math.abs(contacts[1].distance-0.1)<0.000001,
+    'smaller overlap probe retains the nearby real wall and its normal')
+reader.collision_unit_live = function(_,unit) return unit ~= 61 end
+scenario = function() return result({0/0,0,0},{0,0,0},61,0) end
+contacts = scan()
+check(#contacts == 0 and calls == 12,'proven destroyed generation is discarded before geometry/body lookup')
+reader.collision_unit_live = function() error('registry unreadable') end
+check(not pcall(scan),'unreadable lifetime metadata cannot authorize ghost-free movement')
+reader.collision_unit_live = nil
 scenario = nil
 collectgarbage('collect')
 local pressure = {}

@@ -45,6 +45,14 @@ class SeekerReaderTests(unittest.TestCase):
         self.memory.word(self.brain+8,3)
         self.memory.put(self.motion,b'\1')
 
+    def configure_seeker(self,resource,behavior):
+        identity = struct.pack('<QIIII',resource,1291,0x400002,525,1)
+        for rva,back in ((0x3326740,88),(0x3326460,72),(0x3326558,0x48B8),
+                         (0x3326508,0x58),(0x3326728,80)):
+            self.memory.put(self.ptr(self.ptr(self.root(rva)+back)),identity)
+        self.memory.word(self.brain,behavior)
+        return identity
+
     def test_owned_buffer_relocation_preserves_token_not_old_storage_validity(self):
         ticket = self.capture()
         self.throw()
@@ -200,10 +208,53 @@ class SeekerReaderTests(unittest.TestCase):
         self.memory.put(owner,struct.pack('<Q',0x123456789ABCDEF0))
         self.assertIsNone(self.capture())
 
-    def test_both_seeker_resources_supported(self):
-        owner = self.ptr(self.ptr(self.root(0x3326740)+88))
-        self.memory.put(owner,struct.pack('<Q',0x2D398D1EC35E0838))
-        self.assertEqual(self.capture()[b'name'],b'G-50 SEEKER')
+    def test_each_seeker_uses_its_verified_native_behavior_through_deployment(self):
+        for resource,behavior,name in ((0x2D398D1EC35E0838,621,b'G-50 SEEKER'),
+                                       (0x8E325C933E55BF62,4,b'G-60 ANTI-TANK SEEKER')):
+            with self.subTest(name=name):
+                self.memory.pointer(self.obj+0x1D0,self.actor_obj)
+                self.memory.word(self.brain+8,1)
+                self.configure_seeker(resource,behavior)
+                for quick in (False,True):
+                    ticket = self.reader.capture(self.reader,quick)
+                    self.assertEqual(ticket[b'name'],name)
+                    self.assertEqual(ticket[b'behavior_kind'],behavior)
+                    self.assertFalse(self.reader.snapshot(self.reader,ticket)[b'deployed'])
+                self.throw()
+                for state in (3,4):
+                    self.memory.word(self.brain+8,state)
+                    sample = self.reader.snapshot(self.reader,ticket)
+                    self.assertEqual(sample[b'behavior_kind'],behavior)
+                    self.assertTrue(sample[b'deployed'])
+                    self.assertTrue(sample[b'detonation_valid']())
+                    self.memory.word(self.brain,0)
+                    self.assertTrue(sample[b'unit_valid']())
+                    self.assertEqual(self.reader.snapshot(self.reader,ticket)[b'behavior_kind'],behavior)
+                    self.memory.word(self.brain,behavior)
+
+    def test_mismatched_seeker_behavior_is_never_captured(self):
+        for resource,expected,actual in ((0x2D398D1EC35E0838,621,4),
+                                        (0x8E325C933E55BF62,4,621),
+                                        (0x2D398D1EC35E0838,621,0)):
+            with self.subTest(resource=hex(resource),actual=actual):
+                self.configure_seeker(resource,actual)
+                with self.assertRaisesRegex(Exception,f'expected={expected}; actual={actual}'):
+                    self.capture()
+
+    def test_seeker_ticket_cannot_change_its_behavior_profile(self):
+        self.configure_seeker(0x2D398D1EC35E0838,621)
+        ticket = self.capture()
+        ticket[b'behavior_kind'] = 4
+        with self.assertRaisesRegex(Exception,'seeker_ticket_behavior_changed'):
+            self.reader.snapshot(self.reader,ticket)
+
+    def test_standard_seeker_guidance_uses_its_native_behavior_not_anti_tank_kind(self):
+        self.configure_seeker(0x2D398D1EC35E0838,621)
+        sample = self.guide()
+        self.assertEqual(list(sample[b'guidance_target']().values()),[12,30,4])
+        for wrong in (0,4,190):
+            self.memory.word(self.brain,wrong)
+            self.assertIsNone(sample[b'guidance_target']())
 
     def test_solo_join_and_triggered_explosion_prevent_native_detonation(self):
         ticket = self.capture()

@@ -47,6 +47,37 @@ class CharacterBodyTests(unittest.TestCase):
             with self.subTest(resource=resource):
                 self.assertFalse(self.classify(resource))
 
+    def test_prop_classification_does_not_require_drone_transform_accessor(self):
+        obj = self.ptr(self.memory.unit_rows+2*8)
+        vtable = self.ptr(obj)
+        self.memory.pointer(vtable+0xE8,self.memory.engine+0x123456)
+        self.assertFalse(self.classify(123))
+        body,meta = self.native.character_body(self.native,0x400002,self.snapshot)
+        self.assertFalse(body)
+        self.assertTrue(meta[b'valid']())
+        with self.assertRaisesRegex(Exception,'unit_accessor'):
+            self.native.position(self.native,0x400002)
+
+    def test_body_classification_uses_identity_not_transform_accessor(self):
+        obj = self.ptr(self.memory.unit_rows+2*8)
+        self.memory.pointer(self.ptr(obj)+0xE8,self.memory.engine+0x123456)
+        self.assertTrue(self.classify(0x1A7FCDFF98C664B0))
+        body,meta = self.native.character_body(self.native,0x400002,self.snapshot)
+        self.assertTrue(body)
+        self.assertTrue(meta[b'valid']())
+        self.memory.word(obj+8,0x800002)
+        self.assertFalse(meta[b'valid']())
+
+    def test_prop_identity_still_rejects_recycled_generations(self):
+        self.assertFalse(self.classify(123))
+        body,meta = self.native.character_body(self.native,0x400002,self.snapshot)
+        self.assertFalse(body)
+        registry = self.ptr(self.memory.engine+0x1A100F0)
+        self.memory.put(self.ptr(registry+0xA0)+2,b'\2')
+        self.assertFalse(meta[b'valid']())
+        with self.assertRaisesRegex(Exception,'body_identity_changed'):
+            self.native.character_body(self.native,0x400002,self.snapshot)
+
     def test_missing_authored_entity_is_an_unknown_obstacle_not_a_body(self):
         self.memory.mapping(self.authored,0xF2AEE0,{1: 0})
         self.assertFalse(self.native.character_body(self.native,0x400002,self.snapshot))
@@ -62,7 +93,7 @@ class CharacterBodyTests(unittest.TestCase):
         registry = self.ptr(self.memory.engine+0x1A100F0)
         generations = self.ptr(registry+0xA0)
         self.memory.put(generations+2,b'\2')
-        with self.assertRaisesRegex(Exception,'unit_generation'):
+        with self.assertRaisesRegex(Exception,'body_identity_changed'):
             self.native.character_body(self.native,0x400002,self.snapshot)
 
     def test_changed_native_lookup_bytes_are_refused(self):

@@ -9,6 +9,11 @@ SeekerReader.resources = {
     ['2d398d1ec35e0838'] = 'G-50 SEEKER',
     ['8e325c933e55bf62'] = 'G-60 ANTI-TANK SEEKER',
 }
+-- Verified native behavior kinds differ even though both use the same flight states.
+SeekerReader.behaviors = {
+    ['2d398d1ec35e0838'] = 621,
+    ['8e325c933e55bf62'] = 4,
+}
 function SeekerReader.new(r, channel, B)
     local self = {}
     local function actor()
@@ -51,12 +56,17 @@ function SeekerReader.new(r, channel, B)
         if not ok then assert(brain == 'component_absent',brain); return nil end
         local resource = B.hex(brain.descriptor:sub(1,8):reverse())
         if not SeekerReader.resources[resource] then return nil end
+        local behavior_kind = SeekerReader.behaviors[resource]
+        local behavior = r:word(brain.address)
+        assert(behavior == behavior_kind, 'held_seeker_behavior_changed: resource='..resource..
+            '; expected='..behavior_kind..'; actual='..behavior)
         local parent,parent_valid = r:parent_unit(brain.unit)
-        assert(parent == a.unit and parent_valid() and r:word(brain.address) == 4 and
+        assert(parent == a.unit and parent_valid() and r:word(brain.address) == behavior_kind and
             inventory.valid() and (not wield or wield.valid()) and brain.valid() and a.valid() and
             (quick_throw or r:word(inventory.address+28) == 4) and r:word(source) == entity, 'held_seeker_changed')
         return {entity = entity,unit = brain.unit,identity = brain.descriptor,
-            actor_identity = a.identity,resource = resource,name = SeekerReader.resources[resource]}
+            actor_identity = a.identity,resource = resource,name = SeekerReader.resources[resource],
+            behavior_kind = behavior_kind}
     end
     -- Camera ownership outlives the exploded unit. Never resolve a drone here.
     function self:camera_snapshot(ticket)
@@ -80,6 +90,8 @@ function SeekerReader.new(r, channel, B)
     end
     function self:snapshot(ticket)
         assert(type(ticket) == 'table' and SeekerReader.resources[ticket.resource], 'seeker_ticket_required')
+        local behavior_kind = SeekerReader.behaviors[ticket.resource]
+        assert(ticket.behavior_kind == behavior_kind, 'seeker_ticket_behavior_changed')
         local a = actor()
         assert(a.identity == ticket.actor_identity, 'seeker_actor_changed')
         local brain = r:component(0x3326740,64,88,44,ticket.entity,96,0x1F8,4096)
@@ -111,7 +123,7 @@ function SeekerReader.new(r, channel, B)
             drone_position = r:position(ticket.unit),drone_parent_unit = parent,drone_engine_resource = resource,
             gun_unit = ticket.unit,gun_goid = brain.goid,gun_engine_resource = resource,
             node_index = r:node_index(),brain = brain,motion = motion,movement = movement,
-            camera = view.camera,camera_row = view.camera_row,drone_name = ticket.name,behavior_kind = 4,
+            camera = view.camera,camera_row = view.camera_row,drone_name = ticket.name,behavior_kind = behavior_kind,
             explosive = explosive,detonation_manager = explosive.root,
             ownership_key = ticket.actor_identity..ticket.identity..resource,
             -- Fast throws can pass straight from ballistic release (2) to seek (4).
@@ -144,7 +156,7 @@ function SeekerReader.new(r, channel, B)
                     local bytes = B.unhex(guard[2])
                     assert(r:raw(channel.base+guard[1],#bytes) == bytes,'seeker_guidance_code_changed')
                 end
-                assert(result.unit_valid() and r:word(brain.address) == 4 and
+                assert(result.unit_valid() and r:word(brain.address) == behavior_kind and
                     r:word(brain.address+8) == 4 and r:raw(brain.address+0x78,1) == '\1',
                     'seeker_target_inactive')
                 local target = r:word(brain.address+0x18)
@@ -164,7 +176,7 @@ function SeekerReader.new(r, channel, B)
                 end
                 assert(valid() and r:root(0x346BF98) == authored and r:raw(at,24) == identity and
                     result.unit_valid() and r:word(brain.address+0x18) == target and
-                    r:word(brain.address) == 4 and r:word(brain.address+8) == 4 and
+                    r:word(brain.address) == behavior_kind and r:word(brain.address+8) == 4 and
                     r:raw(brain.address+0x78,1) == '\1','seeker_target_changed')
                 return point
             end)

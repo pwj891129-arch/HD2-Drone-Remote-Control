@@ -44,11 +44,14 @@ function Aim.new(channel, B, Lease)
         for _, pair in ipairs({{self.mode,targeting.flags},{self.point,targeting.position}}) do
             if pair[1] then pcall(self.lease.rebind,self.lease,pair[1],pair[2],targeting.valid) end
         end
+        if self.engaged and snapshot.aim_motor then
+            self.lease:rebind(self.engaged,snapshot.aim_motor.engaged,snapshot.aim_motor.valid)
+        end
     end
     function self:clear()
         if self.lease then
             assert(self.lease:release(), 'aim_restore_pending')
-            self.lease,self.context,self.point,self.mode,self.ownership_key = nil,nil,nil,nil,nil
+            self.lease,self.context,self.point,self.mode,self.ownership_key,self.engaged = nil,nil,nil,nil,nil,nil
         end
         self.direction,self.yaw = nil,nil
     end
@@ -69,6 +72,9 @@ function Aim.new(channel, B, Lease)
         local motor = snapshot.aim_motor
         assert(motor or snapshot.aim_motor_reason == 'lookat_component_absent', 'aim_motor_unavailable')
         assert(not motor or motor.valid(), 'aim_motor_changed')
+        assert(not self.lease or self.ownership_key == snapshot.ownership_key,'aim_owner_changed')
+        local engaged = motor and channel:read(motor.engaged,1)
+        assert(not motor or engaged == '\0' or engaged == '\1','aim_motor_flag_invalid')
         local origin = assert(snapshot.weapon_position, 'aim_origin_unavailable')
         local desired,range = unit({point[1]-origin[1],point[2]-origin[2],point[3]-origin[3]})
         local direction = Aim.follow(self.direction or assert(snapshot.weapon_forward, 'aim_orientation_unavailable'),
@@ -83,18 +89,38 @@ function Aim.new(channel, B, Lease)
             self.mode = self.lease:claim(targeting.flags,B.u32(0),B.u32(2),targeting.valid)
             self.point = self.lease:claim(targeting.position,assert(channel:read(targeting.position,12)),
                 raw,targeting.valid)
+            if motor then
+                self.engaged = self.lease:claim(motor.engaged,engaged,'\1',motor.valid)
+                engaged = '\1'
+            end
         else
             assert(self.context.flags == targeting.flags and self.context.position == targeting.position and
-                self.context.valid() and channel:read(targeting.flags,4) == B.u32(2), 'aim_capture_changed')
+                self.context.valid(), 'aim_capture_changed')
+            local mode = channel:read(targeting.flags,4)
+            if mode == self.mode.original and self.mode.original ~= self.mode.value then
+                self.lease:reassert(self.mode)
+                mode = self.mode.value
+            end
+            if channel:read(targeting.position,12) == self.point.original and self.point.original ~= self.point.value then
+                self.lease:reassert(self.point)
+            end
+            assert(mode == B.u32(2),'aim_capture_changed')
             self.lease:set(self.point,raw)
         end
         assert(self.context.valid() and channel:read(targeting.flags,4) == B.u32(2) and
             (not motor or motor.valid()),
             'aim_capture_changed')
-        -- These are native producer outputs, not configuration leases. Refresh all
-        -- consumers even without fire; native targeting owns them again on release.
+        -- Target positions are producer outputs, not stale targets to restore.
+        -- The motor activation flag is leased so recall cannot retain manual activation.
         if motor then
-            for _, output in ipairs({{motor.position,raw},{motor.engaged,'\1'},{motor.fire_position,raw}}) do
+            assert(self.engaged and self.engaged.address == motor.engaged,'aim_motor_changed')
+            if engaged == '\0' and self.engaged.original == '\1' and self.engaged.value == '\1' then
+                self.lease:adopt_unchanged(self.engaged,'\0')
+            elseif engaged == self.engaged.original and self.engaged.original ~= self.engaged.value then
+                self.lease:reassert(self.engaged)
+            end
+            self.lease:set(self.engaged,'\1')
+            for _, output in ipairs({{motor.position,raw},{motor.fire_position,raw}}) do
                 assert(motor.valid() and channel:write(output[1],output[2]) and
                     channel:read(output[1],#output[2]) == output[2], 'aim_motor_write_failed')
             end

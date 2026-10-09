@@ -1,10 +1,21 @@
 # HD2 Drone Remote Control
 
-**0.2.27 experimental prerelease for Helldivers 2. Solo by default.**
+**0.2.33 experimental test build for Helldivers 2. Solo by default.**
 
 [한국어 안내 및 변경 기록](README-KO.md) | [Downloads](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases)
 
-[0.2.27 Test Release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.27-test)
+### Nexus Mods Page Notice
+
+I accidentally deleted the mod page on Nexus Mods while uploading an update.
+Until the page is restored, releases and updates will be available on GitHub.
+Sorry for the inconvenience, and thank you for your patience.
+
+[Download 0.2.33](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.33-test)
+
+[Current Controls](#controls): all actions use your configured game keyboard/mouse
+bindings. No fixed hotkeys or key-letter examples are used in the control guide.
+
+[Previously Published 0.2.27 Test Release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.27-test)
 
 [Previously Published 0.2.22 Test Release](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control/releases/tag/drone-remote-control-0.2.22-test)
 
@@ -12,6 +23,155 @@ This is a native-control prototype, not a stable release. Offline tests and
 read-only checks of game connections passed. Actual Seeker camera takeover,
 movement, detonation and surface clearance have not been tested in game.
 Native calls can still crash the game despite ownership and code guards.
+
+### Changed In 0.2.33
+
+- Separate collision identity from the drone transform accessor check. Authored
+  props and body sub-units with different accessors no longer abort classification.
+  Owned drone position, movement and camera validation remain strict.
+- Match the native Actor lookup's absent-handle behavior: inactive or recycled
+  actor references are not live damage parts. Unreadable/changed registries,
+  incorrect live owners and unsupported layouts still hold flight.
+- Retry all-hit overflow with a private **128-row** buffer before consuming any
+  results. Ordinary scans retain 32 rows and at most 14 casts; overlap/overflow
+  recovery has a conservative 70-cast ceiling. No truncated scan permits movement.
+- Keep terrain/vehicle avoidance, 1 cm body clearance, named damage-part filtering,
+  the 0.2.32 recovery behavior, unified languages and configured game bindings.
+
+0.2.32 gameplay logs show `unit_accessor` beside parked vehicles and
+`body_part_registry_bounds` during monster contact, plus a 45-hit overflow.
+Read-only engine inspection confirms the absent-Actor branch and bounded output
+conversion. Offline regressions cover these paths; the new runtime still needs
+actual vehicle/body-contact testing. Apply
+**Drone-Remote-Control-0.2.33-private-test.zip** after fully exiting, deploy and
+restart. Installation is not automatic; GitHub release assets are published separately.
+
+### Changed In 0.2.32
+
+- A terrain-box initial overlap gets a **2 cm centre-probe retry** before being
+  treated as a solid interior. Real wall normals and the existing reverse-probe
+  recovery stay active. Ordinary scans still use at most 14 casts every 50 ms;
+  overlap recovery is bounded to 35 casts. Body clearance remains 1 cm.
+- Collision hits from **proven retired UnitRef generations** are ignored before
+  classification. Live debris and unknown/static hits remain blocking. This does
+  not remove every destroyed object's collider or bypass unreadable geometry.
+- A backpack surface-query failure lasting **2 s** releases manual control and
+  restores native AI/player input instead of leaving an indefinite frozen view.
+  Short failures still hold flight without authorizing motion through walls.
+- Manual LookAt activation is restored on exit, including same-owner storage
+  relocation. Exact owned native AI and aim resets can recover outside the old
+  one-second fire window; foreign behavior/mode/identity changes still refuse.
+- Backpack **outward movement is limited at 100 m** without an immediate exit.
+  Inward/tangential inputs remain usable. External overshoot has **5 s** to return;
+  the HUD shows `RANGE LIMIT` or the remaining `SIGNAL RETURN` time. Seeker range
+  remains unlimited. Surface avoidance takes priority when constraints conflict.
+- Empty feed is confirmed for **0.2 s** with firing disabled during confirmation.
+  Transient empty samples can recover; no ammo is added or rewritten. Exit logs
+  include the last magazine, chamber, effective ammo, reserve and heat values.
+- The unified option languages and configured game bindings are unchanged.
+  Separate mod-key configuration has not been added.
+
+Offline tests pass. Prone entry, broken props, Hot Dog recall/reentry, remaining
+ammo and physical boundary behavior still require live testing; these reports
+are not claimed fully resolved. Stationary K-9 fixture writes over 120 frames
+drop **360 -> 240**, with reads **185,664 -> 185,904** (+0.13%). This is not an FPS
+benchmark. Replace with **Drone-Remote-Control-0.2.32-private-test.zip**, deploy
+and restart after fully exiting. Not automatically installed or published.
+
+### Changed In 0.2.31
+
+- Fixed standard **G-50 Seeker** capture being rejected by the G-60-only AI-kind
+  check. Live read-only observations show G-50 uses **621**, not G-60's **4**.
+- Both native identities are now applied consistently to held/quick-throw capture,
+  manual flight, homing validation and exact AI restoration after control.
+- Regression tests cover both throw routes, native AI resets, homing ON/OFF,
+  detonation and camera/input restoration for each family. Foreign ownership,
+  recycled units and unexpected behavior kinds still fail closed.
+- The **0.5 s deployment delay**, **30 s lifetime**, **0.7 s explosion view**,
+  multilingual options and existing performance improvements are unchanged.
+
+G-50 held state 1 and detached flight states 3/4 were checked read-only in a solo
+mission. This confirms native values, not successful flight with the modified
+runtime. Apply **Drone-Remote-Control-0.2.31-private-test.zip** after fully exiting
+the game, deploy and restart to test both throw routes and manual detonation.
+This build is not automatically installed or published.
+
+### Changed In 0.2.30
+
+- K-9 Arc readiness is a display-only sample every **100 ms**, matching the HUD.
+  It no longer resolves the Arc component every control frame. Owner changes
+  and clock rewinds discard the sample; failures retry on the next scheduled poll.
+  Ammunition, overheating, firing eligibility and control checks remain live.
+- Component identity checks read a small contiguous manager header in one call.
+  Root, map, count, owner pointer, descriptor and row-pointer checks remain fresh
+  on every validation. No component values are reused across frames.
+- A bounded **64-entry unit-address cache** avoids repeated object discovery.
+  Every lookup still reads the current registry, generation, slot, object identity
+  and accessor. Changed objects cannot pass on the strength of cached addresses.
+- Movement, mouse aim, firing, native transform updates, body clearance and
+  restoration timing are unchanged. The unified 14-locale option menu remains.
+
+Stationary, non-firing K-9 mock workload over 120 frames: **246,960 -> 185,664
+memory-read calls** (24.8% fewer). Read volume is **2,691,240 -> 2,790,360 bytes**
+because batches include intervening header bytes. This measures native-reader
+crossings, not reduced allocation size or in-game FPS. The mock excludes real
+physics, rendering and native engine cost, so live comparison is still required.
+
+Use **Drone-Remote-Control-0.2.30-private-test.zip**, replacing the old mod after
+fully exiting. Deploy and restart. Compare K-9 control OFF/ON without firing,
+then movement, camera turning, charging and shooting. This build is neither
+automatically installed nor published.
+
+### Changed In 0.2.29
+
+- One multilingual ZIP replaces separate English/Korean packages. Arsenal
+  metadata defaults to English; no language pack or online translator is needed.
+- In-game mod title, all three option names and their descriptions follow the
+  game's **Text Language**: English, French, Italian, German, Spanish, Latin
+  American Spanish, Japanese, Korean, Brazilian Portuguese, Portuguese, Polish,
+  Russian, Simplified Chinese and Traditional Chinese. Unknown/unreadable
+  languages and missing translations fall back to English.
+- Language changes are detected at most every **250 ms**, including switching
+  away from Korean and back. Rendering labels performs no memory reads.
+  Saved ON/OFF values and stable option IDs are preserved without re-registration.
+- All 0.2.28 performance optimizations remain. Drone HUD status text is unchanged;
+  this translation catalog covers the in-game option menu only.
+
+Use **Drone-Remote-Control-0.2.29-private-test.zip**. Fully exit the game, replace
+the old mod in Arsenal, deploy and restart. Offline language-switching, fallback,
+option persistence and regression tests are included; live menu glyph rendering
+and FPS comparison still need testing. This build is not automatically installed
+or published. The old Korean manifest is retained as a source reference only.
+
+### Changed In 0.2.28
+
+- HUD layout, GUI-world discovery and text refresh run at most once every
+  **100 ms**. Unchanged text objects remain on screen instead of being rebuilt.
+- Binding discovery reuses parsed keys for **250 ms**, while binding payloads
+  are still checked before use. Changes or replaced tables force rediscovery.
+- Idle frames sample hotkeys without resolving unused backpack or Seeker
+  ownership/camera graphs. The entry modifier wakes discovery immediately.
+- Native memory reads and float conversions reuse bounded FFI buffers. Reads
+  still copy current memory and refuse partial/failed results; memory contents
+  are not cached across frames.
+- Repeated snapshot checks and duplicate movement-time pose queries are removed.
+  Fresh ownership, parent, generation, lease-byte and restore checks remain.
+- Unchanged lease values are validated but not written again. Authored body-part
+  names use a bounded 64-model cache, checked against table/slot identities.
+- Surface scans stay at **50 ms** even while rapidly changing direction. Six
+  axial probes continue to cover nearby surfaces. External displacement drops
+  stale samples and holds motion until a scheduled fresh query succeeds.
+- Movement, camera and firing remain per-frame. Existing range, clearance,
+  Seeker timing and default-OFF assistance/multiplayer settings are unchanged.
+
+Offline fixture comparison: snapshot reads **862 -> 750**; total binding reads
+over 120 validated frames **10,078,560 -> 400,144 bytes**. These are mock workload
+counts, not an in-game FPS benchmark. Live FPS/stutter and input/avoidance tests
+are still required. This build has not been published or automatically installed.
+
+Completely exit, replace the old mod with one **0.2.28 EN/KO ZIP**, deploy and
+restart. Compare the same drone/scene with control OFF and ON, including K-9
+firing, fast turns, walls, Seeker Aim Mode Switch + Quick Throw and return to player control.
 
 ### Changed In 0.2.27
 
@@ -60,7 +220,7 @@ in-game verification. Earlier notes below describe historical policies.
   guards remain enabled. Normal scans use at most 14 sweeps; overlap recovery
   can add one reverse sweep per hit, at most 28 total, on the 50 ms sensor.
 - Terrain margins remain **1 m for Guard Dogs / 0.5 m for Seekers**. The
-  0.5 s Seeker entry delay, Q detonation removal and other 0.2.25 changes remain.
+  0.5 s Seeker entry delay, Aim Mode Switch detonation removal and other 0.2.25 changes remain.
 
 Replace the previous mod with one local **0.2.26 EN/KO ZIP**, deploy and fully
 restart. Offline regressions and read-only filter checks are separate from
@@ -73,7 +233,7 @@ Earlier version notes below describe their historical policy.
 
 - Seeker takeover now waits **0.5 seconds** of continuous native deployment.
   This is not a teleport or guaranteed release from a wall.
-- **Aim Mode Switch (Q) no longer detonates or cancels Seeker control**.
+- **Aim Mode Switch no longer detonates or cancels Seeker control**.
   A fresh Attack press still detonates. Native explosion, the 30-second
   lifetime from deployment and ownership/focus safety exits remain enabled.
 - Same-owner Seeker component storage can relocate without ending control.
@@ -150,7 +310,7 @@ one local 0.2.23 EN/KO ZIP, deploy and fully restart before testing.
 
 ### Fixed In 0.2.22
 
-Passive Guard Dog lookup failures no longer erase Seeker Q/G edge history.
+Passive Guard Dog lookup failures no longer erase Seeker Aim Mode Switch / Quick Throw edge history.
 Quick Throw creates a held Seeker during its animation; capture now waits up
 to 3 seconds for this exact owned, attached inventory item. Live read-only
 records showed ballistic state 2 moving directly to active seek state 4,
@@ -166,11 +326,11 @@ passed; these fixes still require confirmation after installing the new ZIP.
 
 ### Quick Throw And Explosion View
 
-Hold mapped Aim Mode Switch and use mapped **Quick Throw** (currently Q+G) to
-prepare Seeker control without equipping slot 4. The same owned inventory item
+Hold mapped Aim Mode Switch and use mapped **Quick Throw** to
+prepare Seeker control without using Equip Throwable. The same owned inventory item
 must still be attached to this actor before its native deployment is tracked.
 If it is not available immediately, the mod waits at most 3 seconds to capture
-it; it never searches for nearby launched drones. The original Q+Attack route
+it; it never searches for nearby launched drones. The original Aim Mode Switch + Attack route
 is retained. Both require releasing the throw/attack key and waiting 0.5 seconds
 after continuous deployment before takeover.
 
@@ -178,13 +338,13 @@ After requested or observed detonation, the last camera position and rotation
 stay frozen for **0.7 seconds**, then player view/input and companion handling
 are restored. The hold does not access or move the destroyed drone and does not
 accept another attack. Focus loss, invalid bindings, actor/camera replacement,
-party join with Allow Multiplayer OFF, or shutdown interrupt it safely. In-game Q+G takeover and explosion
+party join with Allow Multiplayer OFF, or shutdown interrupt it safely. In-game Aim Mode Switch + Quick Throw takeover and explosion
 timing are not yet verified; offline regression tests passed.
 
 ## Installation
 
-1. Completely exit the game. Download **one** EN or KO ZIP from Releases.
-   They have the same runtime; the Arsenal descriptions differ.
+1. Completely exit the game. Use the single **0.2.31 multilingual ZIP** for this
+   local build. Public Releases may still contain older EN/KO packages.
 2. Import it into Arsenal, replace the previous Drone Remote Control version,
    and enable its **Backpack and Seeker Control** option.
 3. Deploy with **Bingus Shared Loader / API 1**, then restart the game.
@@ -192,7 +352,8 @@ timing are not yet verified; offline regression tests passed.
 
 Mod Options Menu (API 1, version 3+) is optional, for backpack **Auto Aim** and
 **Seeker Homing Assist**, and **Allow Multiplayer**. All default OFF without it. They are independent
-settings; labels follow game text language (Korean/English, English fallback).
+settings; names and descriptions automatically follow game text language in
+14 locales, with English fallback. Arsenal metadata remains English.
 HUD+, HD2 Helper and Vehicle Dual Control are not
 required. The runtime includes cooperation with compatible HD2 Helper versions
 to suspend wheel/reload input handling during drone control.
@@ -202,25 +363,50 @@ and development dependencies are not required to play.
 
 ## Controls
 
-Controls follow the game's keyboard/mouse bindings. Q and T below refer to the
-author's current Aim Mode Switch and Backpack Function bindings, not fixed keys.
+Every action below uses the key or mouse button assigned to that action in the
+game's keyboard/mouse settings. These are action names, not fixed hotkeys.
 
-| Mode | Enter | Move | Exit |
-| --- | --- | --- | --- |
-| Guard Dog backpack | Hold Aim Mode Switch and press Backpack Function; release both | Movement keys; Dodge up; Crouch down; mouse aim; Attack fires | Backpack Function; ammo/heat or signal limit |
-| G-50 / G-60 Seeker | Hold Aim Mode Switch and use Quick Throw; or equip slot 4, hold Aim Mode Switch, press then **release** Attack | Same movement and camera controls | Fresh Attack requests detonation; Q does nothing; 30-second timeout; 0.7-second explosion view |
+### Guard Dog Backpacks
+
+1. Equip a supported Guard Dog backpack during a mission.
+2. Hold **Aim Mode Switch**, press **Backpack Function**, then release both inputs.
+3. Wait for any recall, docking and redeployment preparation to finish.
+4. During control, press **Backpack Function** again to exit.
+
+### Seeker Drones
+
+Hold **Aim Mode Switch**, use **Quick Throw**, then release both inputs.
+Takeover waits for deployment and a **0.5-second** settling period.
+
+Alternatively, use **Equip Throwable** to hold the Seeker in your hand. Hold
+**Aim Mode Switch**, press and release **Attack** to throw it, then release
+**Aim Mode Switch** and wait for takeover.
+
+During control, a new **Attack** press requests detonation. **Aim Mode Switch**
+does not detonate the Seeker or exit control. Its lifetime is **30 seconds**
+from deployment; the camera holds for **0.7 seconds** after explosion.
+
+### Movement And Attack
+
+- **Move Forward / Backward / Left / Right**: fly horizontally.
+- **Dodge**: ascend.
+- **Crouch**: descend.
+- Camera/look controls: look and aim.
+- **Attack**: fire a backpack drone's weapon, or request Seeker detonation.
 
 Backpack targets: Guard Dog, Rover, Hot Dog, K-9 and Dog Breath. Ownership is
 checked through the worn backpack; nearby unrelated drones are not adopted.
 Preparation may recall and redeploy the drone before camera takeover.
 
-Backpacks have a 100 m signal range. Empty ammunition or full overheat returns
-control to native AI; the mod does not refill ammunition. Seekers have no range
-limit or return function. Throw-release and a continuously held Q are not
+Backpacks limit outward flight at 100 m; external overshoot receives a 5 s return
+grace. Empty ammunition confirmed for 0.2 s or full overheat returns control to
+native AI; the mod does not refill ammunition. Seekers have no range
+limit or return function. Throw-release and a continuously held Aim Mode Switch are not
 detonation inputs. The exact held Seeker must detach and remain deployed for
 0.5 seconds before takeover. Native detonation during this wait cancels entry.
 
-Both modes are solo-only by default. Allow Multiplayer ON permits parties,
+Both modes are solo-only by default: no other party members may be present.
+**Multiplayer has not been verified in live gameplay.** Allow Multiplayer ON permits parties,
 while retaining own-drone checks. A party join with that option OFF, lost focus,
 invalid ownership or an error ends control and attempts restoration without
 requesting an extra Seeker explosion.
@@ -238,7 +424,8 @@ requesting an extra Seeker explosion.
 - Crosshair convergence, body tracking and shot effects still need live testing.
   The mod does not forcibly freeze the player's body rotation.
 - Game-build and ownership guards may intentionally refuse control after an
-  incompatible game update. Multiplayer is opt-in and unverified; guests may
+  incompatible game update. Multiplayer is opt-in and unverified; correct operation
+  and synchronization are not guaranteed for hosts or guests. Guests may
   lack authority or observe replication differences.
 - No claim of anti-cheat compatibility or account safety is made. Test at your
   own risk and fully restart the game after replacing or removing the mod.
@@ -253,8 +440,8 @@ python test.py
 python build.py
 ```
 
-The build runs the tests, emits deterministic EN/KO ZIPs into `releases/`, and
-verifies their Lua archive payloads and SHA-256 manifests. It does not install
+The build runs the tests, emits one deterministic multilingual ZIP into
+`releases/`, and verifies its Lua archive payload and SHA-256 manifest. It does not install
 the mod, access the game process or publish a release.
 
 `tools/` contains read-only development probes, not required runtime code. Live
@@ -262,7 +449,8 @@ probes currently depend on the separate private Vehicle Dual Control camera
 reader and are not a standalone diagnostic distribution. Offline fixtures do
 not need that project. Optional checks against local retained game images are
 skipped when those images are absent; no game binaries or memory captures are
-distributed. Only compact Guard Dog/body identity catalogs are included.
+distributed. Local research JSON and observation records are excluded from new
+packages and are not required for the public offline tests or runtime.
 
 `publish.ps1` publishes already-built packages after their source commit has
 been pushed. It verifies GitHub asset digests before making a prerelease public.

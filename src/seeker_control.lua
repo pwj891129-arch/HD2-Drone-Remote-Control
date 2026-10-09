@@ -12,6 +12,12 @@ function Seeker.new(reader, channel, Hotkey, report)
         local now,fire,q = channel:now(),channel:down(keys.fire),channel:down(keys.aim_mode)
         local quick = keys.quick_throw and channel:down(keys.quick_throw) or false
         local ticket = c.seeker_ticket
+        if not ticket and not q and not self.quick_wait then
+            self.candidate,self.after,self.quick_candidate,self.quick_after = nil,nil,nil,nil
+            self.hotkey:step({binding_token = keys.binding_token,fire_down = fire,
+                aim_mode_down = false,quick_down = quick,active = false,held = false})
+            return false
+        end
         if ticket then
             c.stage = 'seeker/snapshot'
             local snapshot = reader:snapshot(ticket)

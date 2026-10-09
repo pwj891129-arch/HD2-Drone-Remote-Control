@@ -57,40 +57,38 @@ def main():
     verify(patch, source)
     releases = ROOT / 'releases'
     releases.mkdir(exist_ok=True)
-    packages = []
-    for language, manifest_name in [('EN', 'manifest.json'), ('KO', 'manifest-ko.json')]:
-        files = {'manifest.json': (ROOT / manifest_name).read_bytes(),
-                 'Addon/' + PATCH: patch, 'Addon/' + PATCH + '.stream': b'',
-                 'Addon/' + PATCH + '.gpu_resources': b'',
-                 'README-KO.md': (ROOT / 'README-KO.md').read_bytes(),
-                 'README.md': (ROOT / 'README.md').read_bytes()}
-        for path in [*(ROOT / 'src').glob('*.lua'), *(ROOT / 'tests').glob('*.py'), *(ROOT / 'tests').glob('*.lua'),
-                     ROOT / 'test.py', ROOT / 'build.py', ROOT / 'requirements-dev.txt',
-                     ROOT / 'tools/read_drone_state.py', ROOT / 'tools/preflight.py',
-                     ROOT / 'tools/observe_control.py', ROOT / 'tools/read_pose_sources.py',
-                     ROOT / 'tools/check_surface_query.py',
-                     ROOT / 'research/guard-dog-catalog.json',
-                     ROOT / 'research/native-body-arc-20261009.json']:
-            files['Source/' + path.relative_to(ROOT).as_posix()] = path.read_bytes()
-        files['Source/validation.json'] = (json.dumps(report, indent=2) + '\n').encode('ascii')
-        files['SHA256SUMS.txt'] = ''.join(hashlib.sha256(value).hexdigest() + '  ' + name + '\n'
-                                         for name, value in sorted(files.items())).encode('ascii')
-        path = releases / f'Drone-Remote-Control-0.2.27-private-test-{language}.zip'
-        with zipfile.ZipFile(path, 'w') as output:
-            for name, value in sorted(files.items()):
-                entry = zipfile.ZipInfo(name, (2026, 10, 9, 0, 0, 0))
-                entry.compress_type = zipfile.ZIP_DEFLATED
-                entry.external_attr = 0o100644 << 16
-                output.writestr(entry, value)
-        with zipfile.ZipFile(path) as result:
-            assert result.testzip() is None and set(result.namelist()) == set(files)
-            for name, value in files.items():
-                assert result.read(name) == value
-            verify(result.read('Addon/' + PATCH), source)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        path.with_suffix('.zip.sha256').write_text(digest + '  ' + path.name + '\n', encoding='ascii')
-        packages.append({'language': language, 'path': str(path), 'sha256': digest,
-                         'entries': len(files), 'verified': True})
+    files = {'manifest.json': (ROOT / 'manifest.json').read_bytes(),
+             'Addon/' + PATCH: patch, 'Addon/' + PATCH + '.stream': b'',
+             'Addon/' + PATCH + '.gpu_resources': b'',
+             'README-KO.md': (ROOT / 'README-KO.md').read_bytes(),
+             'RELEASE-0.2.33.md': (ROOT / 'RELEASE-0.2.33.md').read_bytes(),
+             'README.md': (ROOT / 'README.md').read_bytes()}
+    for path in [*(ROOT / 'src').glob('*.lua'), *(ROOT / 'tests').glob('*.py'), *(ROOT / 'tests').glob('*.lua'),
+                 ROOT / 'test.py', ROOT / 'build.py', ROOT / 'requirements-dev.txt',
+                 ROOT / 'tools/read_drone_state.py', ROOT / 'tools/preflight.py',
+                 ROOT / 'tools/observe_control.py', ROOT / 'tools/read_pose_sources.py',
+                 ROOT / 'tools/check_surface_query.py']:
+        files['Source/' + path.relative_to(ROOT).as_posix()] = path.read_bytes()
+    files['Source/validation.json'] = (json.dumps(report, indent=2) + '\n').encode('ascii')
+    files['SHA256SUMS.txt'] = ''.join(hashlib.sha256(value).hexdigest() + '  ' + name + '\n'
+                                     for name, value in sorted(files.items())).encode('ascii')
+    path = releases / 'Drone-Remote-Control-0.2.33-private-test.zip'
+    with zipfile.ZipFile(path, 'w') as output:
+        for name, value in sorted(files.items()):
+            entry = zipfile.ZipInfo(name, (2026, 10, 10, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.external_attr = 0o100644 << 16
+            output.writestr(entry, value)
+    with zipfile.ZipFile(path) as result:
+        assert result.testzip() is None and set(result.namelist()) == set(files)
+        assert not any('research' in Path(name).parts for name in result.namelist())
+        for name, value in files.items():
+            assert result.read(name) == value
+        verify(result.read('Addon/' + PATCH), source)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    path.with_suffix('.zip.sha256').write_text(digest + '  ' + path.name + '\n', encoding='ascii')
+    packages = [{'path': str(path), 'sha256': digest, 'entries': len(files), 'verified': True,
+                 'default_language': 'en', 'option_languages': report['option_translation_locales']}]
     print(json.dumps({'packages': packages, 'auto_installed': False, 'published': False,
                       'in_game_tested': False, 'remote_control_implemented': True,
                       'scope': 'five Guard Dog families and G-50/G-60; solo default, experimental multiplayer opt-in; not a stable release'}, indent=2))

@@ -1,6 +1,7 @@
 local Query = {}
 Query.filters = {0x05A5271A,0x393D9518} -- Geometry and the game's projectile collision filter.
 Query.capacity = 32
+Query.overflow_capacity = 128
 Query.max_reverse = 14
 -- Narrow, private box sweeps, verified against the game's original overlap worker.
 -- No scheduler records, actors, collision shapes or player movement are modified.
@@ -34,7 +35,7 @@ function Query.new(ffi,channel,B,reader)
         local at = tonumber(ffi.cast('uintptr_t',owner))
         return owner,owner+(16-at%16)%16
     end
-    local output_size = Query.capacity*44
+    local output_size = Query.overflow_capacity*44
     local output_owner,output = aligned(output_size)
     local origin,rotation = ffi.new('float[3]'),ffi.new('float[4]',{0,0,0,1})
     local extent,target = ffi.new('float[3]',{0.2,0.2,0.2}),ffi.new('float[3]')
@@ -99,22 +100,30 @@ function Query.new(ffi,channel,B,reader)
         if not invoke then self:verify() end
         local world,reason = self:world()
         if not world then return nil,reason end
-        local contacts,body_cache,overlaps,recovered,body_overlaps = {},{},{},{},{}
+        local contacts,body_cache,live_cache,overlaps,recovered,body_overlaps = {},{},{},{},{},{}
         local reverse_count = 0
         local ignored = snapshot.drone_unit
         assert(type(ignored) == 'number' and ignored > 0 and ignored % 1 == 0 and ignored < 4294967295,
             'surface_ignore_unit_invalid')
         ffi.cast('uint32_t *',descriptor)[12] = ignored
-        local function cast(from,direction,filter)
+        local function cast(from,direction,filter,narrow)
             for axis = 1,3 do
                 origin[axis-1],target[axis-1] = from[axis],from[axis]+direction[axis]*reach
-                extent[axis-1] = filter == Query.filters[2] and 0.001 or 0.2
+                extent[axis-1] = filter == Query.filters[2] and 0.001 or narrow and 0.02 or 0.2
             end
-            ffi.fill(output,output_size)
+            ffi.fill(output,Query.capacity*44)
             local count = tonumber(invoke(world.index,2,2,5,filter,descriptor,output,Query.capacity))
-            assert(count >= 0 and count <= Query.capacity and count%1 == 0,
+            local capacity = Query.capacity
+            if count > capacity and count%1 == 0 and count <= Query.overflow_capacity then
+                -- The all-hit worker reports total hits even when output is full.
+                -- Retry before reading any truncated rows; never keep a partial scan.
+                capacity = Query.overflow_capacity
+                ffi.fill(output,output_size)
+                count = tonumber(invoke(world.index,2,2,5,filter,descriptor,output,capacity))
+            end
+            assert(count >= 0 and count <= capacity and count%1 == 0,
                 'surface_count_invalid_'..tostring(count))
-            local hits = {}
+            local hits,initial_overlap = {},false
             for i = 0,count-1 do
                 local bytes = ffi.string(output+i*44,44)
                 local unit,actor = B.word(bytes,28),B.word(bytes,32)
@@ -122,24 +131,38 @@ function Query.new(ffi,channel,B,reader)
                 -- sweeps prevent a discarded broad hull from hiding a limb or wall.
                 if unit ~= ignored and unit ~= snapshot.gun_unit and unit ~= snapshot.pack_unit and
                     unit ~= snapshot.actor_unit then
-                    if not body_cache[unit] then
-                        local body,meta = false,nil
-                        if reader then body,meta = reader:character_body(unit,snapshot) end
-                        body_cache[unit] = {body = body == true,meta = meta,parts = {}}
+                    if live_cache[unit] == nil then
+                        live_cache[unit] = not reader or not reader.collision_unit_live or
+                            reader:collision_unit_live(unit) ~= false
                     end
-                    local cached = body_cache[unit]
-                    local accepted = filter == Query.filters[1] and not cached.body
-                    if filter == Query.filters[2] and cached.body then
-                        if cached.parts[actor] == nil then
-                            cached.parts[actor] = reader:body_part(cached.meta,unit,actor) == true
+                    if live_cache[unit] then
+                        if not body_cache[unit] then
+                            local body,meta = false,nil
+                            if reader then body,meta = reader:character_body(unit,snapshot) end
+                            body_cache[unit] = {body = body == true,meta = meta,parts = {}}
                         end
-                        accepted = cached.parts[actor]
-                    end
-                    if accepted then
-                        hits[#hits+1] = {position = channel:vector(bytes,0),normal = channel:vector(bytes,12),
-                            distance = channel:float(bytes,24),unit = unit,actor = actor,character_body = cached.body}
+                        local cached = body_cache[unit]
+                        local accepted = filter == Query.filters[1] and not cached.body
+                        if filter == Query.filters[2] and cached.body then
+                            if cached.parts[actor] == nil then
+                                cached.parts[actor] = reader:body_part(cached.meta,unit,actor) == true
+                            end
+                            accepted = cached.parts[actor]
+                        end
+                        if accepted then
+                            local distance = channel:float(bytes,24)
+                            initial_overlap = initial_overlap or distance <= 0.00001
+                            hits[#hits+1] = {position = channel:vector(bytes,0),normal = channel:vector(bytes,12),
+                                distance = distance,unit = unit,actor = actor,character_body = cached.body}
+                        end
                     end
                 end
+            end
+            -- A broad box can overlap a wall while its centre is outside. Recheck
+            -- that direction with a small probe before treating it as an interior.
+            -- Ordinary clear scans and body probes retain their original cost.
+            if initial_overlap and filter == Query.filters[1] and not narrow and from == position then
+                return cast(from,direction,filter,true)
             end
             return hits
         end
