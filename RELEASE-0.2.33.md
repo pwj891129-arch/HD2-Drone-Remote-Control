@@ -1,6 +1,7 @@
 # Drone Remote Control 0.2.33-test
 
-Experimental vehicle/body surface-wait correction; live verification required.
+Experimental release with improvements for movement getting stuck near vehicles
+and enemies.
 
 The Nexus Mods page was accidentally deleted while uploading an update.
 I've contacted Nexus Mods to request a restoration. If the page cannot be
@@ -28,9 +29,11 @@ This is an experimental release; multiplayer is optional and OFF by default.
 
 **Bingus Shared Loader / API 1 is required and not bundled.**
 **Bingus's Mod Options Menu / API 1, version 3+** is optional for changing the
-in-game settings. HUD+, HD2 Helper and Vehicle Dual Control are not required.
+in-game settings. Without it, Auto Aim, Seeker Homing Assist and Allow Multiplayer
+remain OFF.
+
 Do not enable multiple versions together. The `.sha256` asset is a checksum,
-not another mod to import. Python and diagnostic tools are not required to play.
+not another mod to import.
 
 ## Controls
 
@@ -93,50 +96,36 @@ is needed. Arsenal labels remain English; HUD status text is not localized.
 
 ## Important Notes
 
-Game updates can break compatibility and native control can still crash the game.
-Surface avoidance is approximate, not exact mesh collision; complex terrain,
-moving bodies and deeply embedded Seekers can behave unexpectedly. Latest
-surface-wait corrections still require live verification.
+This is an experimental release. Game updates can break compatibility, and
+crashes are possible. Surface avoidance is approximate; complex terrain, moving
+enemies and deeply embedded Seekers can behave unexpectedly. The latest fixes
+still need gameplay verification; not all getting-stuck issues are confirmed resolved.
 
 **Multiplayer has not been verified in live gameplay.** Enabling it does not
-guarantee network authority, reliable guest behavior or host/client synchronization.
+guarantee reliable operation or host/client synchronization.
 Anti-cheat compatibility and account safety are not guaranteed. Use at your own risk.
 
-[Full guide and troubleshooting](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control#controls)
+[Full guide and troubleshooting](https://github.com/pwj891129-arch/HD2-Drone-Remote-Control#readme)
 
 ## Patch Notes: 0.2.33
 
-- Separate collision classification from drone transform-accessor validation.
-  Vehicle props remain obstacles without requiring the drone accessor layout.
-- Treat inactive/recycled Actor references as absent damage parts, matching the
-  native lookup. Unreadable layouts, changed registries and foreign owners still
-  refuse movement; body hit-part filtering and 1 cm clearance remain enabled.
-- Retry all-hit overflow using a bounded 128-row private buffer. Normal queries
-  retain 32 rows; incomplete results never authorize motion. Ordinary scans make
-  at most 14 casts; combined overlap/overflow recovery is bounded to 70 casts.
-- Preserve terrain/vehicle avoidance, movement/camera ownership guards, the
-  0.2.32 recovery and range behavior, and the unified 14-language option menu.
-- No separate key configuration or automatic installation.
-- Local research JSON and observation records are excluded from this package.
+- Addressed surface-check errors that could stop movement near vehicles or after
+  contact with enemies.
+- Improved handling of outdated collision information and crowded scenes.
+- Wall, terrain and vehicle avoidance remain enabled.
+
+These fixes are experimental and still need gameplay verification.
 
 ## Changes Since The Previous GitHub Release (0.2.27)
 
-- Unified 14-language in-game options with automatic Text Language selection and
-  English fallback. One ZIP replaces separate English/Korean packages.
-- Standard G-50 Seeker support using its own native AI behavior profile.
-- Reduced repeated native reads, cached binding discovery and K-9 display sampling.
-- Restore manual aim activation on exit; recover exact owned native AI/aim resets.
-- Limit outward backpack flight at 100m, with 5s return grace for external overshoot.
-- Confirm empty ammunition for 0.2s, without changing or refilling ammunition.
-- Narrow terrain-overlap rechecks, retired-unit filtering and native AI release
-  after 2s of persistent backpack surface-query failure.
+- **0.2.32:** improved recovery from stuck flight, aiming after exiting control
+  and interruptions caused by drone AI. Added a 100 m backpack-flight boundary
+  with a 5-second return grace period for external overshoot, and reduced
+  premature exits caused by temporary empty-ammo readings.
+- **0.2.31:** fixed standard G-50 Seeker control entry.
+- **0.2.30:** reduced processing during K-9 control and readiness display updates.
+- **0.2.29:** combined all 14 option languages into one package, with automatic
+  Text Language switching and English fallback.
+- **0.2.28:** reduced repeated processing during control and HUD updates.
 
-0.2.32 gameplay logs showed `unit_accessor` beside vehicles,
-`body_part_registry_bounds` during monster contact and a 45-hit overflow.
-Read-only live engine inspection confirms native Actor absence handling and
-bounded query-output conversion. 121 Python tests plus Lua regression suites
-pass offline. Actual vehicle/body contact with this build still needs testing;
-this is not a claim that all getting-stuck reports are resolved.
-
-All of these changes are included in 0.2.33; intermediate local test packages
-are not required. Installation instructions above apply to the assets below.
+All changes above are included in **0.2.33**.
