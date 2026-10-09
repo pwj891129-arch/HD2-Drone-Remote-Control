@@ -31,6 +31,9 @@ class SeekerReaderTests(unittest.TestCase):
         m.word(self.explosive+40,1)
         self.explosion_rows = self.ptr(self.explosive+96)
         module = self.lua.execute((ROOT/'src/seeker_reader.lua').read_bytes())
+        self.guidance_guards = list(module[b'guidance_guards'].values())
+        for guard in self.guidance_guards:
+            m.put(m.game+guard[1],bytes.fromhex(guard[2].decode()))
         binary = self.lua.execute((ROOT/'src/binary.lua').read_bytes())
         self.reader = module.new(self.native,self.lua.globals().channel,binary)
 
@@ -41,6 +44,130 @@ class SeekerReaderTests(unittest.TestCase):
         self.memory.pointer(self.obj+0x1D0,0)
         self.memory.word(self.brain+8,3)
         self.memory.put(self.motion,b'\1')
+
+    def test_owned_buffer_relocation_preserves_token_not_old_storage_validity(self):
+        ticket = self.capture()
+        self.throw()
+        before = self.reader.snapshot(self.reader,ticket)
+        for rva,offset,size,field in ((0x3326740,96,0x1F8,b'brain'),
+                                     (0x3326460,96,56,b'motion'),
+                                     (0x3326558,0x48C0,0x1C,b'movement')):
+            with self.subTest(field=field):
+                at = self.root(rva)+offset
+                old = self.ptr(at)
+                fresh = self.memory.allocate(self.memory.read(old,size))
+                self.memory.pointer(at,fresh)
+                after = self.reader.snapshot(self.reader,ticket)
+                self.assertFalse(before[field][b'valid']())
+                self.assertTrue(after[b'unit_valid']())
+                self.assertNotEqual(before[field][b'address'],after[field][b'address'])
+                self.assertEqual(before[b'token'],after[b'token'])
+                self.assertEqual(before[b'ownership_key'],after[b'ownership_key'])
+                before = after
+
+    def test_multiplayer_toggle_applies_to_held_thrown_and_camera_ownership(self):
+        players = self.root(0x3326468)
+        self.options[b'allow_multiplayer'] = True
+        self.memory.word(players+132,4)
+        ticket = self.capture()
+        self.throw()
+        sample = self.reader.snapshot(self.reader,ticket)
+        camera = self.reader.camera_snapshot(self.reader,ticket)
+        self.assertTrue(sample[b'unit_valid']())
+        self.assertTrue(sample[b'detonation_valid']())
+        self.options[b'allow_multiplayer'] = False
+        self.assertFalse(sample[b'unit_valid']())
+        self.assertFalse(sample[b'detonation_valid']())
+        self.assertTrue(camera[b'camera_valid']())
+        self.assertTrue(sample[b'brain'][b'valid']())
+        with self.assertRaisesRegex(Exception,'solo_required'):
+            self.reader.snapshot(self.reader,ticket)
+        self.options[b'allow_multiplayer'] = True
+        self.assertTrue(sample[b'unit_valid']())
+        self.memory.word(players+136,2)
+        self.assertFalse(sample[b'unit_valid']())
+        with self.assertRaisesRegex(Exception,'solo_required'):
+            self.reader.snapshot(self.reader,ticket)
+
+    def test_multiplayer_permission_never_adopts_another_seekers_owner(self):
+        players = self.root(0x3326468)
+        self.options[b'allow_multiplayer'] = True
+        self.memory.word(players+132,2)
+        ticket = self.capture()
+        foreign_actor = self.ptr(self.memory.unit_rows+24)
+        self.memory.pointer(self.obj+0x1D0,foreign_actor)
+        with self.assertRaisesRegex(Exception,'held_seeker_changed'):
+            self.capture()
+        self.assertIsNotNone(ticket)
+
+    def guide(self):
+        ticket = self.capture()
+        self.throw()
+        m = self.memory
+        m.word(self.brain+8,4)
+        m.word(self.brain+0x18,1292)
+        m.put(self.brain+0x1C,struct.pack('<3f',12,30,4))
+        m.put(self.brain+0x78,b'\1')
+        authored = self.root(0x346BF98)
+        m.mapping(authored,0xF1AEB0,{1292: 1})
+        self.target_record = authored+0xF32F18+24
+        m.put(self.target_record,m.record(1292,3,524))
+        return self.reader.snapshot(self.reader,ticket)
+
+    def test_guidance_uses_guarded_native_selected_target_and_point(self):
+        sample = self.guide()
+        point = sample[b'guidance_target']()
+        self.assertEqual(list(point.values()),[12,30,4])
+
+    def test_guidance_never_follows_inactive_or_paused_behavior(self):
+        sample = self.guide()
+        for at,raw in ((self.brain,struct.pack('<I',0)),
+                       (self.brain+8,struct.pack('<I',3)),(self.brain+0x78,b'\0')):
+            with self.subTest(at=at):
+                saved = self.memory.read(at,len(raw))
+                self.memory.put(at,raw)
+                self.assertIsNone(sample[b'guidance_target']())
+                self.memory.put(at,saved)
+
+    def test_guidance_refuses_self_owner_and_unmapped_targets(self):
+        sample = self.guide()
+        for entity in (0,1242,1291,0xFFFFFFFF,4000):
+            with self.subTest(entity=entity):
+                self.memory.word(self.brain+0x18,entity)
+                self.assertIsNone(sample[b'guidance_target']())
+
+    def test_recycled_target_unit_never_receives_guidance(self):
+        sample = self.guide()
+        registry = self.ptr(self.memory.engine+0x1A100F0)
+        self.memory.put(self.ptr(registry+0xA0)+3,b'\2')
+        self.assertIsNone(sample[b'guidance_target']())
+
+    def test_changed_target_identity_does_not_transfer_guidance(self):
+        sample = self.guide()
+        self.memory.changed = self.target_record
+        self.memory.observed[self.target_record] = 0
+        self.assertIsNone(sample[b'guidance_target']())
+
+    def test_guidance_refuses_changed_native_instructions(self):
+        sample = self.guide()
+        for guard in self.guidance_guards:
+            at,raw = self.memory.game+guard[1],bytes.fromhex(guard[2].decode())
+            with self.subTest(at=at):
+                self.memory.put(at,bytes(len(raw)))
+                self.assertIsNone(sample[b'guidance_target']())
+                self.memory.put(at,raw)
+
+    def test_guidance_refuses_invalid_target_position(self):
+        sample = self.guide()
+        for value in (float('nan'),float('inf'),100001):
+            with self.subTest(value=value):
+                self.memory.put(self.brain+0x1C,struct.pack('<3f',value,1,2))
+                self.assertIsNone(sample[b'guidance_target']())
+
+    def test_guidance_lost_on_party_join(self):
+        sample = self.guide()
+        self.memory.word(self.root(0x3326468)+136,2)
+        self.assertIsNone(sample[b'guidance_target']())
 
     def test_exact_held_entity_retained_after_native_throw_and_inventory_change(self):
         ticket = self.capture()

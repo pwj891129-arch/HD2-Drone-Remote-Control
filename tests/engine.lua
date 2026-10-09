@@ -137,6 +137,23 @@ engine:hud(sample,10,false)
 check(texts[#texts].str:find('GUARD DOG') and texts[#texts].str:find('AMMO 17') and
     texts[#texts].str:find('MAGAZINES 3') and not texts[#texts].str:find('HEAT'),
     'magazine drone HUD uses actual rounds/reserve without laser assumptions')
+sample.drone_name,sample.arc_readiness = 'K-9',{percent = 50,remaining = 2.5,ready = false}
+local old_texts = #texts
+engine:hud(sample,10,false)
+check(#texts == old_texts+4 and texts[#texts].str:find('ARC READY 50%%') and
+    texts[#texts].str:find('WAIT 2.5s'),'K-9 shows actual readiness and remaining seconds on a separate line')
+check(math.abs(texts[#texts].pos.y-976) < 1e-8 and math.abs(texts[#texts-2].pos.y-1008) < 1e-8,
+    'K-9 gauge does not replace or overlap main HUD')
+sample.arc_readiness = {percent = 100,remaining = 0,ready = true}
+engine:hud(sample,10,false)
+check(texts[#texts].str:find('100%%') and texts[#texts].color[2] == 100,'ready Arc gauge is green')
+sample.arc_readiness,sample.arc_reason = nil,'arc_owner_changed'
+engine:hud(sample,10,false)
+check(texts[#texts].str == 'ARC READY --','unreadable Arc does not display fabricated zero charge')
+local before = #reports
+engine:hud(sample,10,false)
+check(#reports == before,'unchanged optional Arc failure does not spam logs')
+sample.drone_name,sample.arc_reason = 'GUARD DOG',nil
 engine:clear();check(cursor and mouse and destroyed==1,'input and GUI restored')
 engine:clear();check(destroyed==1,'cleanup idempotent')
 
@@ -307,6 +324,13 @@ engine:hud(sample,1500,false,true)
 check(texts[#texts].str:find('TIME 21.5s') and texts[#texts].str:find('1500.0m') and
     not texts[#texts].str:find('/ 100m') and not texts[#texts].str:find('HEAT'),
     'Seeker HUD shows lifetime and distance without a signal-range or heat fiction')
+check(texts[#texts].str:find('HOMING OFF'),'default Seeker manual flight visible')
+sample.homing_enabled=true
+engine:hud(sample,10,false,true)
+check(texts[#texts].str:find('HOMING ON / MANUAL'),'enabled guidance with manual priority visible')
+sample.homing_active=true
+engine:hud(sample,10,false,true)
+check(texts[#texts].str:find('HOMING ACTIVE'),'active guidance visible')
 check(not engine:seeker_explosion(sample) and hidden==0,'live Seeker is never hidden before detonation')
 exploded=true
 check(engine:seeker_explosion(sample) and hidden==1,'exploded mesh is hidden without deleting the native unit')

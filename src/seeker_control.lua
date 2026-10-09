@@ -1,10 +1,11 @@
-local Seeker = {lifetime = 30, throw_timeout = 8, quick_capture_timeout = 3, camera_hold = 0.7}
+local Seeker = {lifetime = 30, throw_timeout = 8, quick_capture_timeout = 3, camera_hold = 0.7, entry_delay = 0.5}
 function Seeker.new(reader, channel, Hotkey, report)
     local self = {hotkey = Hotkey.new()}
     function self:reset()
         self.candidate,self.after,self.armed_at,self.deadline = nil,nil,nil,nil
         self.quick_wait = nil
         self.quick_candidate,self.quick_after = nil,nil
+        self.deployed_at = nil
         self.hotkey:step(nil)
     end
     function self:monitor(c,keys)
@@ -14,6 +15,10 @@ function Seeker.new(reader, channel, Hotkey, report)
         if ticket then
             c.stage = 'seeker/snapshot'
             local snapshot = reader:snapshot(ticket)
+            if c.active then
+                c.stage = 'seeker/refresh'
+                c:refresh_seeker(snapshot)
+            end
             local event = self.hotkey:step({binding_token = keys.binding_token,
                 fire_down = fire,aim_mode_down = q,quick_down = quick,active = c.active})
             if snapshot.detonating then
@@ -36,11 +41,18 @@ function Seeker.new(reader, channel, Hotkey, report)
             -- a throw while the owned grenade is still attached to the actor.
             if snapshot.deployed and snapshot.motion.enabled == '\1' then
                 if not self.deadline then self.deadline = now+Seeker.lifetime end
-                if not fire and not quick then
+                if not self.deployed_at or now < self.deployed_at then
+                    self.deployed_at = now
+                    c.status = 'waiting_seeker_settle'
+                    report('seeker deployed; waiting '..Seeker.entry_delay..'s before camera takeover')
+                end
+                if not fire and not quick and now-self.deployed_at >= Seeker.entry_delay then
                     c:enter(snapshot)
                     snapshot.remaining = math.max(0,self.deadline-now)
                     return true
                 end
+            else
+                self.deployed_at = nil
             end
             if now-self.armed_at >= Seeker.throw_timeout then c:stop('seeker_throw_timeout') end
             return true

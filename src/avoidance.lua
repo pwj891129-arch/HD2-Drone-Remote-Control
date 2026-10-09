@@ -1,4 +1,4 @@
-local Avoidance = {clearance = 1, interval = 0.05, max_age = 0.1, reach = 4}
+local Avoidance = {clearance = 1, body_clearance = 0.01, interval = 0.05, max_age = 0.1, reach = 4}
 local function finite(n)
     return type(n) == 'number' and n == n and math.abs(n) < 100000
 end
@@ -25,7 +25,7 @@ function Avoidance.step(position,velocity,contacts,dt,previous_velocity,clearanc
     assert(finite(clearance) and clearance >= 0.25 and clearance <= 2, 'invalid_surface_clearance')
     vector(position); vector(velocity)
     if previous_velocity then vector(previous_velocity) end
-    assert(finite(dt) and dt >= 0 and dt <= 0.1 and type(contacts) == 'table' and #contacts <= 7,
+    assert(finite(dt) and dt >= 0 and dt <= 0.1 and type(contacts) == 'table' and #contacts <= 128,
         'invalid_surface_step')
     local v, constraints = {velocity[1],velocity[2],velocity[3]},{}
     for _, hit in ipairs(contacts) do
@@ -33,7 +33,8 @@ function Avoidance.step(position,velocity,contacts,dt,previous_velocity,clearanc
         local size = length(hit.normal)
         assert(size >= 0.9 and size <= 1.1, 'invalid_surface_normal')
         local n = {hit.normal[1]/size,hit.normal[2]/size,hit.normal[3]/size}
-        local gap = dot(minus(position,hit.position),n)-clearance
+        local margin = hit.character_body == true and Avoidance.body_clearance or clearance
+        local gap = dot(minus(position,hit.position),n)-margin
         -- Approach speed fades before contact. An already-close surface requests
         -- a small outward velocity, never a teleport or a physical impulse.
         local bound
@@ -101,6 +102,9 @@ function Avoidance.new(query,report)
                 self.sample = {contacts = contacts,time = now,position = {unpack(position)},direction = direction}
                 sample = self.sample
                 reason = 'ready'
+                for _,hit in ipairs(contacts) do
+                    if hit.recovered then reason = 'ready (initial overlap recovered)'; break end
+                end
             else
                 reason = ok and reason or tostring(contacts)
                 -- A failed query must not authorize motion using stale empty space.

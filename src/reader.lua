@@ -1,4 +1,18 @@
 local Reader = {}
+Reader.body_guards = {
+    {0x4BE6E0,'488b05b1d8fa028bd5448b80e8aef200'},
+    {0x4BE704,'4c8b90e0aef200448b98ecaef200'},
+    {0x4BE73A,'8b5004'},
+}
+Reader.arc_guards = {
+    {0x80C0CB,'4c8b153eabb102'},
+    {0x80C126,'498b5a708bc8498b4278488d3c89'},
+    {0x80C155,'f30f5e4004f30f1144fb0c'},
+    {0x80C521,'f30f1044c10cf30f5844c108f30f1144c108'},
+    {0x80E0C8,'f3410f1044ee080f57f60f2fc6764cf30f5cc7'},
+    {0x80E126,'f3410f1144ee08'},
+    {0x80E14E,'410f2f74ee08720f'},
+}
 -- Authored backpack -> deployed body -> mounted weapon, pinned to the retained build.
 Reader.families = {
     ['af9b683ccb6ddc02'] = {name = 'ROVER', body = '5beec97f4c7f4ae9',
@@ -12,12 +26,20 @@ Reader.families = {
     ['bffcb4cd971a8eda'] = {name = 'DOG BREATH', body = 'b9baf571fc8f9959',
         weapon = 'b729a2ba153bcaed', feed = 'magazine', behavior = 189},
 }
-function Reader.new(channel, B, Flight)
-    local r = {channel = channel}
+function Reader.new(channel, B, Flight, options, body_resources, BodyParts)
+    local r = {channel = channel, options = options or {}}
+    local part_reader = BodyParts and BodyParts.new(r,B)
     function r:raw(at, size) return assert(channel:read(at,size), 'unreadable') end
     function r:ptr(at) return B.ptr(self:raw(at,8)) end
     function r:word(at) return B.word(self:raw(at,4),0) end
     function r:root(rva) return self:ptr(channel.base+rva) end
+    function r:party_allowed(players)
+        local counts = self:raw(players+132,8)
+        local total,local_count = B.word(counts,0),B.word(counts,4)
+        -- The first local peer (+936) must remain unique even with remote peers.
+        return local_count == 1 and total >= 1 and total <= 4 and
+            (total == 1 or self.options.allow_multiplayer == true)
+    end
     function r:map(at, entity)
         local h = self:raw(at,20)
         local rows, count, empty, multiplier = B.ptr(h), B.word(h,8), B.word(h,12), B.word(h,16)
@@ -57,6 +79,28 @@ function Reader.new(channel, B, Flight)
         end
         return result
     end
+    function r:arc_readiness(gun)
+        if not self.arc_verified then
+            for _,guard in ipairs(Reader.arc_guards) do
+                local bytes = B.unhex(guard[2])
+                assert(self:raw(channel.base+guard[1],#bytes) == bytes,'arc_code_changed')
+            end
+            self.arc_verified = true
+        end
+        local arc = self:component(0x3326C10,0x48,0x60,0x38,gun.entity,0x70,40,512)
+        assert(arc.descriptor == gun.descriptor and arc.unit == gun.unit,'arc_owner_changed')
+        local raw = self:raw(arc.address,16)
+        -- Arc update subtracts frame delta from +8; a shot adds the instance
+        -- fire interval at +12. These are remaining seconds, not game timestamps.
+        local remaining,interval = channel:float(raw,8),channel:float(raw,12)
+        assert(interval == interval and interval >= 0.01 and interval <= 120 and
+            remaining == remaining and remaining >= -0.5 and remaining <= interval+0.5,
+            'arc_timer_invalid')
+        assert(arc.valid() and gun.valid(),'arc_owner_changed')
+        remaining = math.max(0,remaining)
+        return {percent = math.max(0,math.min(100,(1-remaining/interval)*100)),
+            remaining = remaining,interval = interval,ready = remaining <= 0}
+    end
     function r:unit_object(unit)
         local registry = self:ptr(channel.exe_base+0x1A100F0)
         local h = self:raw(registry+0x88,32)
@@ -85,6 +129,45 @@ function Reader.new(channel, B, Flight)
         end
         assert(valid(), 'unit_changed')
         return object, valid
+    end
+    function r:character_body(unit,snapshot)
+        if type(unit) ~= 'number' or unit <= 0 or unit >= 1073741824 or unit % 1 ~= 0 then return false end
+        if unit == snapshot.actor_unit then return true end
+        -- Original UnitRef -> entity map. Its value is an entity, not a dense index.
+        for _,guard in ipairs(Reader.body_guards) do
+            assert(self:raw(channel.base+guard[1],#guard[2]/2) == B.unhex(guard[2]), 'body_lookup_code_changed')
+        end
+        local authored = self:root(0x346BF98)
+        local ok,entity = pcall(self.map,self,authored+0xF2AEE0,unit)
+        if not ok then assert(entity == 'component_absent',entity); return false end
+        local index = self:map(authored+0xF1AEB0,entity)
+        assert(index < 100000,'body_descriptor_bounds')
+        local at = authored+0xF32F18+index*24
+        local identity = self:raw(at,24)
+        assert(B.word(identity,8) == entity and B.word(identity,12) == unit, 'body_descriptor_changed')
+        local _,valid = self:unit_object(unit)
+        local resource = B.hex(identity:sub(1,8):reverse())
+        local body = body_resources and body_resources[resource] == true
+        if not body then
+            local avatars = self:root(0x3326D20)
+            local present,dense = pcall(self.map,self,avatars+248,entity)
+            if present then
+                local count = self:word(avatars+108)
+                assert(dense < count and count <= 32 and
+                    self:word(avatars+0x53D8B0+dense*0x1238+0xBD4) == entity, 'body_avatar_changed')
+                body = true
+            else assert(dense == 'component_absent',dense) end
+        end
+        local function body_valid()
+            return valid() and r:root(0x346BF98) == authored and r:raw(at,24) == identity and
+                r:map(authored+0xF2AEE0,unit) == entity and r:map(authored+0xF1AEB0,entity) == index
+        end
+        assert(body_valid(),'body_identity_changed')
+        return body == true,{identity = identity,authored = authored,valid = body_valid}
+    end
+    function r:body_part(meta,unit,actor)
+        assert(part_reader,'body_part_reader_unavailable')
+        return part_reader:matches(meta,unit,actor)
     end
     function r:position(unit)
         local object, valid = self:unit_object(unit)
@@ -297,7 +380,7 @@ function Reader.new(channel, B, Flight)
     function r:snapshot()
         self.stage = 'local_actor'
         local players, authored, avatars = self:root(0x3326468), self:root(0x346BF98), self:root(0x3326D20)
-        assert(self:word(players+132) == 1 and self:word(players+136) == 1, 'solo_required')
+        assert(self:party_allowed(players), 'solo_required')
         local actor_goid = self:word(players+936)
         local index = self:map(authored+15871688, actor_goid)
         assert(index < 100000, 'actor_bounds')
@@ -432,6 +515,11 @@ function Reader.new(channel, B, Flight)
         end
         self.stage = 'weapon'
         local gun = self:component(0x3326CE0,48,72,24,gun_entity,88,0x3F0,4096)
+        local arc,arc_reason
+        if family.name == 'K-9' then
+            local available,value = pcall(self.arc_readiness,self,gun)
+            if available then arc = value else arc_reason = tostring(value) end
+        end
         local invalid = self:word(channel.base+0x3483C20)
         assert(self:word(fire.address) == gun_entity and
             (self:word(fire.address+4) == invalid or self:word(fire.address+4) == gun_entity), 'fire_slot_alias')
@@ -462,6 +550,7 @@ function Reader.new(channel, B, Flight)
             aim_motor_reason = not found and 'lookat_component_absent' or nil,
             camera = camera, camera_row = row, fire_manager = fire.root,
             drone_name = family.name, behavior_kind = family.behavior,
+            arc_readiness = arc,arc_reason = arc_reason,
             feed = family.feed, heat = heat_value, ammo = ammo, reserve = reserve,
             exhausted = ammo ~= nil and ammo == 0, overheated = overheated,
             menu_active = math.floor(menu_flags/512)%2 == 1}
@@ -478,7 +567,7 @@ function Reader.new(channel, B, Flight)
                 r:position(drone.unit); r:position(feed.unit)
                 return r:root(0x3326468) == players and r:root(0x346BF98) == authored and
                     r:raw(actor_at,24) == identity and r:word(players+936) == actor_goid and
-                    r:word(players+132) == 1 and r:word(players+136) == 1 and
+                    r:party_allowed(players) and
                     r:word(inventory.address+12) == pack_entity and r:word(attachment.address+4) == entity and
                     r:word(pack.address+4) == drone_goid and r:word(drone.address) == gun_entity and
                     boids.dense < r:word(boids.root+32)

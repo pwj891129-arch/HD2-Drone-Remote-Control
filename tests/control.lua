@@ -1,6 +1,6 @@
 local checks = 0
 local function check(value, message) assert(value,message); checks = checks+1 end
-local B, Lease, Flight, Controller, Hotkey, Cooperation, Aim, Pose, SeekerControl, SeekerHotkey = ...
+local B, Lease, Flight, Controller, Hotkey, Cooperation, Aim, Pose, SeekerControl, SeekerHotkey, Guidance = ...
 local memory = {}; local writes = 0; local failed, stolen = nil,false
 local channel = {}
 local ffi = require('ffi')
@@ -191,7 +191,8 @@ local function fixture(globals,state,aim,options,avoidance)
         self.hidden=(self.hidden or 0)+1
     end
     function engine:move(_,position,rotation,_,automatic)
-        check(memory[1000]==B.u32(0) and memory[1500]=='\0','both AI and autonomous flight paused before movement')
+        check(memory[1000]==B.u32(snapshot.kind=='seeker' and options and options.seeker_homing and 4 or 0) and
+            memory[1500]=='\0','autonomous flight paused; optional Seeker target detection never owns movement')
         check(memory[3000]=='\1' and memory[3001]=='\0','actor rotation flags untouched during flight/fire')
         if not automatic then
             check(memory[3002]==floats(rotation),'canonical pose published before scene rotation')
@@ -204,7 +205,7 @@ local function fixture(globals,state,aim,options,avoidance)
     function engine:hud(_,_,_,surface_ready) self.surface_ready=surface_ready end
     local cooperation = globals and Cooperation.new(globals,state)
     local c = Controller.new(channel,reader,engine,B,Lease,Flight,Hotkey,function() end,cooperation,aim,options,
-        Pose.new(channel,B,Lease),avoidance)
+        Pose.new(channel,B,Lease),avoidance,Guidance)
     local tick=c.tick
     function c:tick(dt) channel.time=channel.time+dt;return tick(self,dt) end
     return c,pressed,snapshot,engine,emitted,function() return restored end,reader
@@ -685,8 +686,20 @@ check(not pcall(c.tick,c,0.02),'invalid ownership/solo roster stops before fligh
 c:stop('solo_required')
 check(not c.active and memory[1000]==B.u32(190) and memory[1500]=='\1' and memory[2100]=='MOVE',
     'party join cleanup restores owned AI and input even when a new snapshot is refused')
-local function seeker_fixture()
-    local c,pressed,sample,engine,emitted,restored,reader = fixture()
+local multiplayer_options={allow_multiplayer=true}
+c,pressed,snapshot,engine,emitted=fixture(nil,nil,nil,multiplayer_options)
+snapshot.unit_valid=function() return multiplayer_options.allow_multiplayer end
+enter(c,pressed)
+pressed[1]=true;c:tick(0.02)
+check(c.active and emitted[#emitted]==true,'allowed party can control and fire its owned backpack drone')
+multiplayer_options.allow_multiplayer=false
+check(not pcall(c.tick,c,0.02),'disabling multiplayer prevents another control frame')
+c:stop('solo_required')
+check(not c.active and emitted[#emitted]==false and memory[1000]==B.u32(190) and
+    memory[1500]=='\1' and memory[2100]=='MOVE' and memory[1100]=='\4\0',
+    'live multiplayer OFF stops fire and restores camera, input and autonomous behavior')
+local function seeker_fixture(options)
+    local c,pressed,sample,engine,emitted,restored,reader = fixture(nil,nil,nil,options)
     sample.kind,sample.drone_name,sample.behavior_kind = 'seeker','G-60 SEEKER',4
     sample.deployed,sample.docked = false,false
     sample.heat,sample.feed,sample.targeting = nil,nil,nil
@@ -731,12 +744,17 @@ local function seeker_fixture()
         pressed[quick and 71 or 1]=false;c:tick(0.02)
         check(not c.active,'release alone does not fake deployment')
         sample.deployed=true;c:tick(0.02)
+        check(not c.active and not c.input_lease and memory[1000]==B.u32(4),
+            'deployment begins a half-second native settling period without camera or input capture')
+        c:tick(0.49)
+        check(not c.active,'settling period cannot finish early')
+        c:tick(0.02)
         check(c.active and memory[1000]==B.u32(0) and memory[2100]==B.u32(0),'actual native detach starts control')
         check(detonations==0 and #emitted==0,'throw attack release is not detonation or native gun fire')
     end
     return c,pressed,sample,engine,launch,function() return detonations end,observer,reader
 end
-for _,button in ipairs({1,70}) do
+for _,button in ipairs({1}) do
     local c,pressed,sample,engine,launch,count=seeker_fixture()
     launch()
     sample.drone_position={0,1500,0}
@@ -744,7 +762,7 @@ for _,button in ipairs({1,70}) do
     check(c.active and engine.moved==1,'seekers have no 100m signal limit')
     pressed[70]=false;c:tick(0.02)
     pressed[button]=true;c:tick(0.02)
-    check(not c.active and c.aftermath and count()==1,'fresh attack or Q detonates exactly once and begins camera hold')
+    check(not c.active and c.aftermath and count()==1,'fresh attack detonates exactly once and begins camera hold')
     local position,rotation,moves=memory[1284],memory[1300],engine.moved
     check(memory[1100]=='\0\0' and memory[2100]==B.u32(0),'explosion keeps camera and gameplay input captured')
     check(memory[1000]==B.u32(4) and memory[1500]=='\1' and memory[1600]==sample.movement.original and engine.hidden==1,
@@ -772,6 +790,17 @@ check(not pcall(c.tick,c,0.02),'party join refuses another control frame')
 c:stop('party_join')
 check(not c.active and count()==0 and memory[2100]=='MOVE' and memory[1100]=='\4\0',
     'party join returns inputs without detonating a now-multiplayer throwable')
+local multiplayer_options={allow_multiplayer=true}
+c,pressed,sample,engine,launch,count=seeker_fixture(multiplayer_options)
+sample.unit_valid=function() return multiplayer_options.allow_multiplayer end
+launch();c:tick(0.02)
+check(c.active,'allowed party can enter its exact held-to-thrown Seeker')
+multiplayer_options.allow_multiplayer=false
+check(not pcall(c.tick,c,0.02),'multiplayer OFF refuses another Seeker control frame')
+c:stop('solo_required')
+check(not c.active and count()==0 and memory[1000]==B.u32(4) and memory[1500]=='\1' and
+    memory[2100]=='MOVE' and memory[1100]=='\4\0',
+    'multiplayer OFF restores Seeker autonomy and actor controls without requesting an explosion')
 c,pressed,sample,engine,launch,count=seeker_fixture()
 launch();sample.detonating=true;c:tick(0.02)
 check(not c.active and c.aftermath and count()==0,'observed native explosion holds view without repeated invocation')
@@ -815,7 +844,9 @@ launch(true);c:tick(0.02)
 check(c.active and not c.pending and count()==0 and #channel.commands==0,
     'Q plus mapped quick throw starts control without slot 4 or synthetic input')
 pressed[70]=false;c:tick(0.02);pressed[70]=true;c:tick(0.02)
-check(c.aftermath and count()==1,'fresh Q detonates a quick-thrown seeker')
+check(c.active and not c.aftermath and count()==0,'fresh Q does not cancel or detonate a quick-thrown seeker')
+pressed[1]=true;c:tick(0.02)
+check(c.aftermath and count()==1,'fresh attack still detonates a quick-thrown seeker')
 c:tick(0.701)
 check(not c.session and memory[2100]=='MOVE','quick-thrown seeker restores after the same 0.7s hold')
 c,pressed,sample,engine,launch,count=seeker_fixture()
@@ -827,6 +858,8 @@ check(c.seeker_ticket and not c.active,'late native held-object creation is capt
 sample.deployed=true;c:tick(0.02)
 check(not c.active,'native throw key must be released before input takeover')
 pressed[71]=false;c:tick(0.02)
+check(not c.active,'released quick throw still waits for deployment settling')
+c:tick(1.01)
 check(c.active and count()==0,'released quick-throw key starts the exact deployed ticket')
 c:stop('quick_test_done')
 c,pressed,sample,engine,launch,count=seeker_fixture()
@@ -836,6 +869,7 @@ check(c.seeker.quick_candidate==sample.ticket,'Q alone caches only the exact att
 sample.deployed=true;pressed[71]=true;c:tick(0.02)
 check(c.seeker_ticket==sample.ticket and not c.active,'instant native detach still follows the pre-press ticket')
 pressed[71]=false;c:tick(0.02)
+c:tick(1.01)
 check(c.active and count()==0 and #channel.commands==0,'fast Q+G takeover never guesses among flying drones')
 c:stop('instant_throw_test_done')
 local observer
@@ -891,6 +925,103 @@ check(c.seeker.quick_wait,'quick throw tolerates creation after one second')
 sample.available=true;c:tick(0.02)
 check(c.seeker_ticket==sample.ticket and not c.input_lease,'late attached creation is captured before control')
 sample.deployed=true;pressed[71]=false;c:tick(0.02)
+c:tick(1.01)
 check(c.active and count()==0,'late quick creation enters after native deployment without synthetic input')
 c:stop('late_quick_creation_test_done')
+local options={seeker_homing=false}
+c,pressed,sample,engine,launch,count=seeker_fixture(options)
+launch();c:tick(0.02)
+memory[1000],memory[1500],memory[1600]=B.u32(4),'\1',sample.movement.original
+c:tick(0.02)
+check(c.active and memory[1000]==B.u32(0) and memory[1500]=='\0' and count()==0,
+    'known native AI/Boids/deployment reset renews capture instead of returning to enemy seeking')
+sample.guidance_target=function() return {0,25,2} end
+options.seeker_homing=true;c:tick(0.02)
+check(c.active and memory[1000]==B.u32(4) and memory[1500]=='\0' and sample.homing_active and command()[2]>0,
+    'homing ON runs enemy detection with paused native flight and inertial assisted movement')
+pressed[83]=true;c:tick(0.02)
+check(c.active and not sample.homing_active,'manual back input takes priority over homing')
+pressed[83]=false;c:tick(0.02)
+check(not sample.homing_active,'manual override survives the key release')
+options.seeker_homing=false;c:tick(0.02)
+check(c.active and memory[1000]==B.u32(0) and not sample.homing_active,'homing OFF immediately pauses enemy detection')
+memory[1000]=B.u32(999)
+check(not pcall(c.tick,c,0.02),'foreign behavior types are never reclaimed')
+c:stop('foreign_behavior')
+check(memory[1000]==B.u32(999) and memory[2100]=='MOVE','foreign behavior preserved while actor input restores')
+for _,exit in ipairs({'focus','party','native_explosion'}) do
+    c,pressed,sample,engine,launch,count=seeker_fixture()
+    c:tick(0.02);pressed[70],pressed[1]=true,true;c:tick(0.02)
+    sample.deployed=true;pressed[1]=false;c:tick(0.02)
+    check(not c.active and c.seeker.deployed_at,'settle exit test has not captured player')
+    if exit=='focus' then function channel:foreground() return false end;c:tick(0.02)
+    elseif exit=='native_explosion' then sample.detonating=true;c:tick(0.02)
+    else sample.unit_valid=function() return false end
+        check(not pcall(c.tick,c,0.02),'party join during wait refused');c:stop('party_join') end
+    check(not c.active and not c.input_lease and not c.seeker_ticket and count()==0 and memory[2100]=='MOVE',
+        'settling cancellation leaves actor input untouched: '..exit)
+end
+c,pressed,sample,engine,launch,count=seeker_fixture()
+c:tick(0.02);pressed[70],pressed[1]=true,true;c:tick(0.02)
+sample.deployed=true;pressed[1]=false;c:tick(0.02);c:tick(0.3)
+sample.deployed=false;c:tick(0.02);sample.deployed=true;c:tick(0.02);c:tick(0.49)
+check(not c.active,'interrupted deployment restarts the full settling period')
+c:tick(0.02)
+check(c.active,'stable redeployment can take over after a fresh half second')
+c:stop('settle_test_done')
+for _,name in ipairs({'brain','motion','movement'}) do
+    for _,mode in ipairs({'copied','reset','foreign','live_source'}) do
+        c,pressed,sample,engine,launch,count=seeker_fixture()
+        launch();c:tick(0.02)
+        local old = sample[name]
+        local item = name=='brain' and c.session.behavior or c.session[name]
+        local old_bytes = memory[old.address]
+        old.invalid = mode ~= 'live_source'
+        local replacement = {}
+        for key,value in pairs(old) do replacement[key]=value end
+        replacement.address,replacement.invalid = old.address+40000,false
+        replacement.valid = function() return not replacement.invalid end
+        sample[name] = replacement
+        memory[replacement.address] = mode=='reset' and item.original or
+            mode=='foreign' and string.rep('?',#item.value) or item.value
+        if mode=='copied' or mode=='reset' then
+            c:tick(0.02)
+            check(c.active and count()==0 and item.address==replacement.address,
+                'verified same-Seeker '..name..' '..mode..' relocation preserves control')
+            check(memory[replacement.address]==item.value and memory[old.address]==old_bytes,
+                'relocation writes only fresh owned storage, never stale rows')
+            c:stop('relocation_done')
+            check(memory[replacement.address]==item.original and memory[old.address]==old_bytes,
+                'exit restores the relocated component and leaves stale storage untouched')
+            check(c.last_exit:find('controlled=') and c.last_exit:find('kind=seeker'),
+                'exit records the reason, kind and control duration')
+        else
+            check(not pcall(c.tick,c,0.02),
+                'foreign bytes or duplicate still-live storage cannot recapture '..name)
+            local refused_bytes = memory[replacement.address]
+            c:stop('unverified_relocation')
+            check(count()==0 and memory[replacement.address]==refused_bytes and memory[2100]=='MOVE',
+                'unsafe relocation releases player inputs without a synthetic explosion or foreign write')
+        end
+    end
+end
+c,pressed,sample,engine,launch,count=seeker_fixture()
+launch();c:tick(0.02)
+function channel:now() error('clock_failed_during_exit') end
+c:stop('clock_error')
+check(not c.session and memory[2100]=='MOVE' and memory[1100]=='\4\0' and count()==0,
+    'exit duration logging cannot prevent cleanup when the clock is unavailable')
+for _,field in ipairs({'ownership_key','token','ticket','node_index','camera'}) do
+    local observer
+    c,pressed,sample,engine,launch,count,observer=seeker_fixture()
+    launch();c:tick(0.02)
+    local changed = {}
+    for key,value in pairs(sample) do changed[key]=value end
+    changed[field] = field=='camera' and 99999 or field=='ticket' and {} or 'changed'
+    function observer:snapshot() return changed end
+    local before = writes
+    check(not pcall(c.tick,c,0.02) and writes==before and count()==0,
+        'Seeker renewal rejects changed '..field..' before any control write')
+    c:stop('identity_changed')
+end
 return checks

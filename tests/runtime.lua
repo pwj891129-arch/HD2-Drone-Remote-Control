@@ -1,21 +1,22 @@
 local source = ...
 local checks = 0
 local function check(value,message) assert(value,message);checks=checks+1 end
-local function fixture(previous)
+local function fixture(previous,configure)
     local now,ticks,stops,resets = 0,{},0,0
     local controller = {status='idle',active=false,stage='snapshot'}
     function controller:tick(dt)
         ticks[#ticks+1]=dt
         if self.fail then error(self.fail) end
     end
-    function controller:stop() stops=stops+1;self.active=false;self.session=nil end
+    function controller:stop(reason) stops=stops+1;self.active=false;self.session=nil;self.last_exit=reason end
     function controller:reset_inputs(preserve) resets=resets+1;self.last_preserve=preserve end
     local env = setmetatable({update=previous,shutdown=function(...)return...end,
         CowboyBingusModLoader={api=1},stingray={Unit={},World={},Window={},Mouse={},Vector3={},Quaternion={}},
-        print=function()end,jit={off=function()end},
+        print=function()end,jit={off=function()end},os={getenv=function() return nil end},
         test_channel={now=function()return now end},test_controller=controller,test_reader={stage='backpack'}},
         {__index=_G})
     env._G=env
+    if configure then configure(env) end
     local chunk=assert(loadstring(source));setfenv(chunk,env);chunk()
     return env,ticks,controller,function(value)now=value end,function()return stops,resets end
 end
@@ -37,14 +38,15 @@ env.ModOptionsMenu={api=1,version=3,register_option=function(_,spec)
 time(2)
 env.update(2)
 check(ticks[3]==0.05 and env.DroneRemoteControl.status=='idle','long loading frame clamped, not refused')
-check(option_reads==1 and controller.options.auto_aim,'late options provider uses current monotonic time')
+check(option_reads==3 and controller.options.auto_aim and controller.options.seeker_homing and controller.options.allow_multiplayer,
+    'late options provider uses current monotonic time')
 env.update(0)
 check(ticks[4]==0,'same timestamp does not produce movement')
-check(option_reads==1,'runtime polls settings less often than control frames')
+check(option_reads==3,'runtime polls settings less often than control frames')
 time(1)
 env.update(nil)
 check(ticks[5]==0,'clock rewind resets baseline')
-check(option_reads==2,'options recover after clock rewind')
+check(option_reads==6,'options recover after clock rewind')
 time(1.02)
 env.update(500)
 check(math.abs(ticks[6]-0.02)<1e-8,'clock recovers after reset')
@@ -74,4 +76,38 @@ controller.active=true;controller.session={}
 local ok,why=pcall(env.update)
 stops=counts()
 check(not ok and why==failure and #ticks==1 and stops==1,'foreign error object survives and control exits')
+local closed,opened,lines = 0,0,{}
+local write_failed = false
+env,ticks,controller,time,counts=fixture(nil,function(environment)
+    environment.os.getenv=function(name) check(name=='LOCALAPPDATA','event log uses local app data');return 'MOCK' end
+    environment.CowboyBingusModLoader.open_log=function()
+        return {close=function() closed=closed+1 end,flush=function() error('unsupported_flush') end}
+    end
+    environment.io={open=function(path,mode)
+        check(path=='MOCK\\CowboyBingus\\Helldivers2\\Logs\\DroneRemoteControl.log' and mode=='a',
+            'event-only logger appends to its own log, never truncates a live file')
+        opened=opened+1
+        return {write=function(_,line)
+            if write_failed then error('write_failed') end
+            lines[#lines+1]=line
+        end,close=function() closed=closed+1 end}
+    end}
+end)
+check(#lines>0 and closed==opened+1,'startup log is persisted despite unsupported loader flush')
+env.update();controller.active=true;controller.session={};controller.fail='cancel_test';env.update()
+check(env.DroneRemoteControl.last_exit:find('cancel_test') and lines[#lines]:find('cancel_test') and closed==opened+1,
+    'unexpected control cancellation retains an exit reason and closes its event log')
+write_failed=true;controller.fail='another_cancel';env.update()
+check(closed==opened+1 and not env.DroneRemoteControl.stopped,'failed log writes close handles without stopping updates')
+write_failed=false;env.shutdown()
+env,ticks,controller,time,counts=fixture(nil,function(environment)
+    environment.os.getenv=function() return nil end
+    environment.CowboyBingusModLoader.open_log=function()
+        return {write=function(_,line) lines[#lines+1]=line end,flush=function() end,close=function() end}
+    end
+end)
+local before=#lines
+env.update();controller.fail='fallback_log';env.update()
+check(#lines>before and lines[#lines]:find('fallback_log'),'loader logging remains available without an app-data path')
+env.shutdown()
 return checks

@@ -217,18 +217,40 @@ function Engine.new(s, Flight, report, channel)
         local label = snapshot.kind == 'seeker' and string.format('%s  %.1fm   %s',snapshot.drone_name,distance,weapon) or
             string.format('%s  %.1fm / 100m   %s   AIM %s',
                 snapshot.drone_name or 'ROVER',distance,weapon,automatic and 'AUTO' or 'MANUAL')
+        if snapshot.kind == 'seeker' then
+            label = label..'   '..(not snapshot.homing_enabled and 'HOMING OFF' or
+                snapshot.homing_active and 'HOMING ACTIVE' or 'HOMING ON / MANUAL')
+        end
         if surface_ready == false then label = label..'   SURFACE WAIT' end
         local tint = snapshot.kind == 'seeker' and {255,240,240,220} or Flight.color(distance)
         local font = 'core/performance_hud/debug'
         if self.trace_hud then note('first HUD: Gui.text_extents') end
-        local minimum, maximum = gui_api.text_extents(self.screen,label,font,24)
-        local x = (width - (maximum.x-minimum.x))/2
         if self.trace_hud then note('first HUD: Gui.text') end
         local y = height*0.70
-        self.texts[#self.texts+1] = assert(gui_api.text(self.screen,label,font,24,font,V(x+1,y-1,12),
-            color(240,0,0,0)), 'hud_text_failed')
-        self.texts[#self.texts+1] = assert(gui_api.text(self.screen,label,font,24,font,V(x,y,13),
-            color(tint[1],tint[2],tint[3],tint[4])), 'hud_text_failed')
+        local function line(text,at,tone)
+            local minimum,maximum = gui_api.text_extents(self.screen,text,font,24)
+            local x = (width-(maximum.x-minimum.x))/2
+            self.texts[#self.texts+1] = assert(gui_api.text(self.screen,text,font,24,font,V(x+1,at-1,12),
+                color(240,0,0,0)), 'hud_text_failed')
+            self.texts[#self.texts+1] = assert(gui_api.text(self.screen,text,font,24,font,V(x,at,13),
+                color(tone[1],tone[2],tone[3],tone[4])), 'hud_text_failed')
+        end
+        line(label,y,tint)
+        if snapshot.drone_name == 'K-9' then
+            local arc = snapshot.arc_readiness
+            if arc then
+                local filled = math.floor(arc.percent/5)
+                local bar = string.rep('|',filled)..string.rep('.',20-filled)
+                line(string.format('ARC READY %d%% [%s]   WAIT %.1fs',math.floor(arc.percent),bar,arc.remaining),
+                    y-32,arc.ready and {255,100,240,140} or {255,255,210,90})
+            else
+                line('ARC READY --',y-32,{255,190,190,190})
+                if self.arc_reason ~= snapshot.arc_reason then
+                    note('K-9 readiness unavailable: '..tostring(snapshot.arc_reason))
+                end
+            end
+            self.arc_reason = snapshot.arc_reason
+        end
         if self.trace_hud then note('first HUD: complete'); self.trace_hud = false end
     end
     function adapter:clear()
@@ -242,6 +264,7 @@ function Engine.new(s, Flight, report, channel)
         end
         self.drone,self.gun,self.world,self.gui_world,self.node,self.token = nil,nil,nil,nil,nil,nil
         self.trace_move,self.trace_hud = nil,nil
+        self.arc_reason = nil
     end
     return adapter
 end

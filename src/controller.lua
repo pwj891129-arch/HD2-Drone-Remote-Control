@@ -1,5 +1,5 @@
 local Controller = {}
-function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, report, cooperation, aim, options, pose, avoidance)
+function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, report, cooperation, aim, options, pose, avoidance, Guidance)
     local c = {active = false, status = 'idle', hotkey = Hotkey.new(), pending_cleanup = false}
     local zero = B.u32(0)
     function c:reset_inputs(preserve_seeker)
@@ -8,6 +8,16 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         if not self.pack_lease and not self.input_lease then self.keys = nil end
     end
     function c:stop(reason)
+        local session = self.session
+        local detail = 'exit: '..reason
+        if session and session.started_at then
+            local ok,now = pcall(channel.now,channel)
+            if ok and type(now) == 'number' and now == now and now < math.huge then
+                detail = detail..string.format('; kind=%s; controlled=%.3fs',
+                    tostring(session.context.kind),math.max(0,now-session.started_at))
+            end
+        end
+        self.last_exit = detail
         self.active = false
         if avoidance then avoidance:clear() end
         self.pending_cleanup = false
@@ -76,7 +86,7 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         end
         self.status = reason
         self:reset_inputs()
-        report('exit: '..reason)
+        report(detail)
     end
     function c:arm_backpack(keys)
         if self.pack_lease then return end
@@ -185,7 +195,7 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         local lease = Lease.new(channel)
         self.session = {lease = lease, context = snapshot, token = snapshot.token,
             ownership_key = snapshot.ownership_key, firing = false,
-            velocity = {0,0,0}, fire_guard_until = -1,
+            velocity = {0,0,0}, fire_guard_until = -1,started_at = channel:now(),
             input_trace_remaining = 12, input_trace_after = 0}
         self.stage = 'entry/player_input'
         self:arm_inputs(self.keys)
@@ -214,6 +224,30 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         report(string.format('control keys: forward=%d back=%d left=%d right=%d up=%d down=%d fire=%d',
             self.keys.forward,self.keys.back,self.keys.left,self.keys.right,self.keys.up,self.keys.down,self.keys.fire))
         report('entered '..snapshot.drone_name..' remote control')
+    end
+    function c:refresh_seeker(snapshot)
+        local session = assert(self.session,'seeker_session_missing')
+        local previous = session.context
+        assert(self.active and snapshot.kind == 'seeker' and previous.kind == 'seeker' and
+            snapshot.ticket == self.seeker_ticket and snapshot.ticket == previous.ticket and
+            snapshot.ownership_key == session.ownership_key and snapshot.token == session.token and
+            snapshot.unit_valid() and snapshot.fire_valid(),'control_owner_changed')
+        assert(snapshot.node_index == previous.node_index,'control_node_changed')
+        assert(snapshot.camera == previous.camera,'control_camera_changed')
+        local refreshed = false
+        for _,pair in ipairs({{session.behavior,snapshot.brain},
+            {session.motion,snapshot.motion},{session.movement,snapshot.movement}}) do
+            local item,component = pair[1],pair[2]
+            assert(component.valid(),'seeker_component_changed')
+            local ok,valid = pcall(item.valid)
+            if item.address ~= component.address or not (ok and valid) then
+                -- Rebind accepts only our copied bytes or the exact pre-entry value.
+                session.lease:rebind(item,component.address,component.valid)
+                refreshed = true
+            end
+        end
+        session.context = snapshot
+        if refreshed then report('owned Seeker storage relocated; control leases refreshed') end
     end
     function c:camera_tick(snapshot,position)
         local session = self.session
@@ -333,7 +367,11 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         assert(snapshot.brain.address == session.context.brain.address and snapshot.brain.valid() and
             session.context.brain.valid(), 'control_behavior_changed')
         assert(snapshot.motion.address == session.context.motion.address and snapshot.motion.valid() and
-            session.context.motion.valid() and reader:raw(snapshot.motion.address,1) == '\0', 'control_motion_resumed')
+            session.context.motion.valid(), 'control_motion_changed')
+        if snapshot.kind == 'seeker' and reader:raw(snapshot.motion.address,1) == '\1' then
+            session.lease:reassert(session.motion)
+        end
+        assert(reader:raw(snapshot.motion.address,1) == '\0','control_motion_resumed')
         assert(snapshot.movement.address == session.context.movement.address and snapshot.movement.valid() and
             session.context.movement.valid(), 'control_movement_changed')
         self.stage = 'control/camera'
@@ -345,7 +383,22 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         local distance = observed.distance
         if snapshot.kind ~= 'seeker' and distance > 100 then self:stop('signal_lost'); return end
         local behavior = reader:word(snapshot.brain.address)
-        if behavior ~= 0 then
+        local homing = snapshot.kind == 'seeker' and options and options.seeker_homing == true or false
+        if snapshot.kind == 'seeker' then
+            local desired = B.u32(homing and snapshot.behavior_kind or 0)
+            local raw = reader:raw(snapshot.brain.address,4)
+            if raw ~= session.behavior.value then
+                assert(behavior == snapshot.behavior_kind and snapshot.fire_valid() and
+                    session.context.fire_valid(),'control_behavior_resumed')
+                session.lease:reassert(session.behavior)
+                report('owned Seeker AI reset; manual flight capture renewed')
+            end
+            session.lease:set(session.behavior,desired)
+            -- Accept only the exact pre-entry command if native deployment resets it.
+            if reader:raw(snapshot.movement.address,16) ~= session.movement.value then
+                session.lease:reassert(session.movement)
+            end
+        elseif behavior ~= 0 then
             -- Native firing can reset this same drone to its original behavior type.
             -- Reclaim only that known reset during our own fire window, never foreign states.
             assert(behavior == snapshot.behavior_kind and channel:now() <= session.fire_guard_until and
@@ -361,6 +414,11 @@ function Controller.new(channel, reader, engine, B, Lease, Flight, Hotkey, repor
         local input = {dx = dx,dy = dy}
         for _, name in ipairs({'forward','back','left','right','up','down'}) do
             input[name] = channel:down(keys[name]) and 1 or 0
+        end
+        if snapshot.kind == 'seeker' and Guidance then
+            snapshot.homing_enabled = homing
+            snapshot.homing_active = Guidance.apply(session,input,observed.position,
+                homing and snapshot.guidance_target and snapshot.guidance_target() or nil,homing,channel:now())
         end
         local position,yaw,pitch,camera,quaternion,forward,command,velocity = Flight.step(observed.position,
             session.yaw,session.pitch,input,dt,session.velocity)

@@ -5,6 +5,11 @@
 !/RELEASE-0.2.20.md
 !/RELEASE-0.2.21.md
 !/RELEASE-0.2.22.md
+!/RELEASE-0.2.23.md
+!/RELEASE-0.2.24.md
+!/RELEASE-0.2.25.md
+!/RELEASE-0.2.26.md
+!/RELEASE-0.2.27.md
 !/requirements-dev.txt
 !/manifest.json
 !/manifest-ko.json
@@ -28,5 +33,6 @@
 !/research/
 /research/*
 !/research/guard-dog-catalog.json
+!/research/native-body-arc-20261009.json
 __pycache__/
 *.pyc

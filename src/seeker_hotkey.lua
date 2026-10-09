@@ -10,10 +10,10 @@ function Hotkey.new()
             self.token,self.fire,self.q,self.quick = input.binding_token,fire,q,quick
             return
         end
-        local fire_edge,q_edge,quick_edge = fire and not self.fire,q and not self.q,quick and not self.quick
+        local fire_edge,quick_edge = fire and not self.fire,quick and not self.quick
         self.fire,self.q,self.quick = fire,q,quick
         if input.active then
-            if fire_edge or q_edge then return 'detonate' end
+            if fire_edge then return 'detonate' end
         elseif q and quick_edge then return 'quick_arm'
         elseif input.held and q and fire_edge then return 'arm' end
     end

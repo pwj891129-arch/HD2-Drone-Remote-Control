@@ -1,4 +1,10 @@
 local SeekerReader = {}
+SeekerReader.guidance_guards = {
+    {0x8431E1,'833c2e000f84f5020000'}, -- Paused behavior skips native target/seek updates.
+    {0x4730DC,'488b51088b0a83e902'},
+    {0x4B0C68,'8b43103b05af2ffd02'},
+    {0x4B0CD2,'f20f1043148b431c'},
+}
 SeekerReader.resources = {
     ['2d398d1ec35e0838'] = 'G-50 SEEKER',
     ['8e325c933e55bf62'] = 'G-60 ANTI-TANK SEEKER',
@@ -7,7 +13,7 @@ function SeekerReader.new(r, channel, B)
     local self = {}
     local function actor()
         local players, authored = r:root(0x3326468),r:root(0x346BF98)
-        assert(r:word(players+132) == 1 and r:word(players+136) == 1, 'solo_required')
+        assert(r:party_allowed(players), 'solo_required')
         local goid = r:word(players+936)
         local dense = r:map(authored+15871688,goid)
         assert(dense < 100000 and goid > 0 and goid < 32767, 'actor_bounds')
@@ -21,7 +27,7 @@ function SeekerReader.new(r, channel, B)
                 r:word(players+936) == goid and r:raw(at,24) == identity
         end
         local function valid()
-            return owned() and r:word(players+132) == 1 and r:word(players+136) == 1
+            return owned() and r:party_allowed(players)
         end
         assert(valid(), 'actor_changed')
         return {entity = entity,unit = unit,identity = identity,valid = valid,owned = owned}
@@ -111,7 +117,8 @@ function SeekerReader.new(r, channel, B)
             -- Fast throws can pass straight from ballistic release (2) to seek (4).
             deployed = parent == nil and (r:word(brain.address+8) == 3 or r:word(brain.address+8) == 4),
             detonating = r:raw(explosive.address+36,1) ~= '\0'}
-        result.token = result.ownership_key..tostring(brain.address)
+        -- Storage addresses can move without changing this captured unit/generation.
+        result.token = result.ownership_key
         function result.unit_valid()
             local ok,valid = pcall(function()
                 return a.valid() and brain.valid() and motion.valid() and movement.valid() and
@@ -130,6 +137,39 @@ function SeekerReader.new(r, channel, B)
                 r:raw(explosive.address+36,1) ~= '\0'
         end
         result.fire_valid = result.unit_valid
+        function result.guidance_target()
+            -- Native behavior supplies enemy selection, never native flight authority.
+            local ok,point = pcall(function()
+                for _,guard in ipairs(SeekerReader.guidance_guards) do
+                    local bytes = B.unhex(guard[2])
+                    assert(r:raw(channel.base+guard[1],#bytes) == bytes,'seeker_guidance_code_changed')
+                end
+                assert(result.unit_valid() and r:word(brain.address) == 4 and
+                    r:word(brain.address+8) == 4 and r:raw(brain.address+0x78,1) == '\1',
+                    'seeker_target_inactive')
+                local target = r:word(brain.address+0x18)
+                assert(target > 0 and target < 0xFFFFFF00 and target ~= a.entity and target ~= ticket.entity,
+                    'seeker_target_invalid')
+                local authored = r:root(0x346BF98)
+                local dense = r:map(authored+0xF1AEB0,target)
+                assert(dense < 100000,'seeker_target_bounds')
+                local at = authored+0xF32F18+dense*24
+                local identity = r:raw(at,24)
+                assert(B.word(identity,8) == target,'seeker_target_changed')
+                local _,valid = r:unit_object(B.word(identity,12))
+                local point = channel:vector(r:raw(brain.address+0x1C,12),0)
+                for axis = 1,3 do
+                    assert(type(point[axis]) == 'number' and point[axis] == point[axis] and
+                        math.abs(point[axis]) < 100000,'seeker_target_position_invalid')
+                end
+                assert(valid() and r:root(0x346BF98) == authored and r:raw(at,24) == identity and
+                    result.unit_valid() and r:word(brain.address+0x18) == target and
+                    r:word(brain.address) == 4 and r:word(brain.address+8) == 4 and
+                    r:raw(brain.address+0x78,1) == '\1','seeker_target_changed')
+                return point
+            end)
+            return ok and point or nil
+        end
         assert(result.unit_valid() and result.graph_valid() and result.camera_valid(), 'seeker_snapshot_changed')
         return result
     end

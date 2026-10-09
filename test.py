@@ -15,7 +15,7 @@ def assembled_source():
 
 def runtime_source():
     source = (ROOT / 'src/runtime.lua').read_text(encoding='ascii')
-    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'options', 'aim', 'pose', 'platform', 'reader', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'engine', 'controller', 'clock'):
+    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'options', 'aim', 'pose', 'platform', 'reader', 'body_resources', 'body_parts', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'seeker_guidance', 'engine', 'controller', 'clock'):
         source = source.replace('-- @' + name.upper() + '@',
                                 (ROOT / 'src' / (name + '.lua')).read_text(encoding='ascii'))
     assert '-- @' not in source
@@ -92,7 +92,7 @@ def run():
     check(press(backpack_down=True) == 'enter')
 
     modules = [lua.execute((ROOT / 'src' / (name + '.lua')).read_text(encoding='ascii'))
-               for name in ('binary', 'lease', 'flight', 'controller', 'control_hotkey', 'cooperation', 'aim', 'pose', 'seeker_control', 'seeker_hotkey')]
+               for name in ('binary', 'lease', 'flight', 'controller', 'control_hotkey', 'cooperation', 'aim', 'pose', 'seeker_control', 'seeker_hotkey', 'seeker_guidance')]
     control_checks = lua.execute((ROOT / 'tests/control.lua').read_text(encoding='ascii'), *modules)
     check(control_checks >= 25)
     cooperation_checks = lua.execute((ROOT / 'tests/cooperation.lua').read_text(encoding='ascii'), modules[5])
@@ -108,6 +108,12 @@ def run():
     check(avoidance_checks >= 25)
     query_checks = lua.execute((ROOT / 'tests/surface_query.lua').read_text(encoding='ascii'), query, modules[0])
     check(query_checks >= 25)
+    parts = lua.execute((ROOT / 'src/body_parts.lua').read_text(encoding='ascii'))
+    part_checks = lua.execute((ROOT / 'tests/body_parts.lua').read_text(encoding='ascii'), parts,modules[0])
+    check(part_checks >= 10)
+    reader = lua.execute((ROOT / 'src/reader.lua').read_text(encoding='ascii'))
+    arc_checks = lua.execute((ROOT / 'tests/arc_readiness.lua').read_text(encoding='ascii'),reader,modules[0])
+    check(arc_checks >= 15)
     options = lua.execute((ROOT / 'src/options.lua').read_text(encoding='ascii'))
     options_checks = lua.execute((ROOT / 'tests/options.lua').read_text(encoding='ascii'), options, modules[0])
     check(options_checks >= 25)
@@ -119,8 +125,10 @@ def run():
     check(platform_checks >= 25)
     seeker_hotkey_checks = lua.execute((ROOT/'tests/seeker_hotkey.lua').read_text(encoding='ascii'),modules[9])
     check(seeker_hotkey_checks >= 15)
+    guidance_checks = lua.execute((ROOT/'tests/seeker_guidance.lua').read_text(encoding='ascii'),modules[10],modules[2])
+    check(guidance_checks >= 20)
     runtime = (ROOT / 'src/runtime.lua').read_text(encoding='ascii')
-    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'options', 'aim', 'pose', 'platform', 'reader', 'seeker_reader', 'seeker_hotkey', 'seeker_control',
+    for name in ('binary', 'lease', 'flight', 'avoidance', 'surface_query', 'control_hotkey', 'cooperation', 'options', 'aim', 'pose', 'platform', 'reader', 'body_resources', 'body_parts', 'seeker_reader', 'seeker_hotkey', 'seeker_control', 'seeker_guidance',
                  'engine', 'controller', 'clock'):
         stub = {'platform': 'return {new=function() return test_channel end}',
                 'reader': 'return {new=function() return test_reader end}',
@@ -137,12 +145,15 @@ def run():
     if retained.exists():
         import re
         image = retained.read_bytes()
-        source_platform = (ROOT / 'src/platform.lua').read_text(encoding='ascii') + (ROOT / 'src/reader.lua').read_text(encoding='ascii')
+        source_platform = (ROOT / 'src/platform.lua').read_text(encoding='ascii') + (ROOT / 'src/reader.lua').read_text(encoding='ascii') + (ROOT / 'src/seeker_reader.lua').read_text(encoding='ascii')
         for rva, raw in re.findall(r"\{(0x[0-9A-F]+),'([0-9a-f]+)'\}", source_platform):
             offset, expected = int(rva, 16), bytes.fromhex(raw)
             check(image[offset:offset + len(expected)] == expected)
         for guard in query.game_guards.values():
             offset, expected = guard[1], bytes.fromhex(guard[2])
+            check(image[offset:offset+len(expected)] == expected)
+        for guard in parts.game_guards.values():
+            offset,expected = guard[1],bytes.fromhex(guard[2])
             check(image[offset:offset+len(expected)] == expected)
     retained_engine = ROOT.parent / 'MissionMedalForecast/scratch/engine-code-20261005.bin'
     if retained_engine.exists():
@@ -157,6 +168,9 @@ def run():
             check(image[at:at+len(bytes.fromhex(expected))] == bytes.fromhex(expected))
         for guard in query.engine_guards.values():
             offset, expected = guard[1], bytes.fromhex(guard[2])
+            check(image[offset:offset+len(expected)] == expected)
+        for guard in parts.engine_guards.values():
+            offset,expected = guard[1],bytes.fromhex(guard[2])
             check(image[offset:offset+len(expected)] == expected)
 
     source = assembled_source()
@@ -201,6 +215,7 @@ def run():
     check(module.u32(bytes.fromhex('04000000')) == 4)
     for manifest in ('manifest.json', 'manifest-ko.json'):
         data = json.loads((ROOT / manifest).read_text(encoding='utf-8'))
+        check('0.2.27' in data['Name'] and data['Description'].startswith('0.2.27'))
         check(data['Guid'] == '73c9cb24-d2ee-4bd1-818c-a07a570885a7')
         check(data['Options'][0]['Include'] == ['Addon'])
     suite = unittest.defaultTestLoader.discover(str(ROOT / 'tests'), pattern='test_*.py')
@@ -210,11 +225,43 @@ def run():
               'runtime_lifecycle_checks': runtime_checks,
               'platform_input_checks': platform_checks,
               'seeker_hotkey_checks': seeker_hotkey_checks,
+              'seeker_guidance_checks': guidance_checks,
+              'seeker_entry_delay_s': 0.5,
+              'seeker_aim_mode_detonates': False,
+              'seeker_same_owner_storage_relocation_supported': True,
+              'seeker_homing_default': False,
+              'seeker_homing_manual_override': True,
+              'in_game_seeker_homing_tested': False,
+              'body_surface_query_filters': [f'{int(value):08x}' for value in query.filters.values()],
+              'player_enemy_body_clearance_m': avoidance.body_clearance,
+              'player_enemy_body_clearance_cm': avoidance.body_clearance * 100,
+              'body_blocking_enabled': True,
+              'body_collision_geometry': 'verified native projectile collision filter; per-model limb gaps require live testing',
+              'body_part_checks': part_checks,
+              'body_named_health_actor_filter': True,
+              'moving_body_overlap_allows_escape': True,
+              'surface_query_hit_capacity': 32,
+              'signed_penetration_plane_recovery': True,
+              'own_body_equipment_excluded_before_geometry': True,
+              'initial_overlap_reverse_probe_recovery': True,
+              'initial_overlap_recovery_max_probe_count': 28,
+              'unresolved_overlap_holds_flight': True,
+              'body_damage_probe_half_extent_m': 0.001,
+              'terrain_probe_half_extent_m': 0.2,
+              'body_classification': 'guarded UnitRef-to-entity map; player avatars and reviewed enemy archetypes',
+              'in_game_body_clearance_tested': False,
+              'allow_multiplayer_default': False,
+              'multiplayer_preserves_own_drone_identity': True,
+              'in_game_multiplayer_tested': False,
               'cooperation_checks': cooperation_checks,
               'manual_aim_checks': aim_checks, 'in_game_options_checks': options_checks,
               'pose_ownership_checks': pose_checks,
               'surface_clearance_checks': avoidance_checks,
               'surface_query_checks': query_checks,
+              'k9_arc_readiness_checks': arc_checks,
+              'k9_arc_readiness_source': 'ArcWeaponComponent remaining timer / instance fire interval',
+              'k9_arc_display_optional': True,
+              'in_game_k9_readiness_display_tested': False,
               'nonphysical_surface_clearance_m': 1,
               'surface_sample_interval_ms': 50,
               'in_game_surface_avoidance_tested': False,

@@ -25,18 +25,35 @@ def inspect(reader):
     engine, _ = reader.module('helldivers2.exe')
     lua = LuaRuntime(unpack_returned_tuples=True)
     query = lua.execute((ROOT / 'src/surface_query.lua').read_text(encoding='ascii'))
+    body_reader = lua.execute((ROOT / 'src/reader.lua').read_text(encoding='ascii'))
     guards = []
     for name, base in [('game', game), ('engine', engine)]:
         for guard in query[name + '_guards'].values():
             at, expected = guard[1], bytes.fromhex(guard[2])
             actual = reader.read(base + at, len(expected))
             guards.append({'module': name, 'rva': hex(at), 'matched': actual == expected})
+    for guard in body_reader.body_guards.values():
+        at,expected = guard[1],bytes.fromhex(guard[2])
+        actual = reader.read(game+at,len(expected))
+        guards.append({'module': 'game','purpose': 'body_identity','rva': hex(at),'matched': actual == expected})
     if not all(guard['matched'] for guard in guards):
         raise ValueError('Unsupported surface function bytes: ' + json.dumps(guards))
     api = reader.pointer(game + 0x3326328)
     if api != engine + 0x27CDB40 or reader.pointer(api) != engine + 0x79F860 or \
             reader.pointer(api + 0x80) != engine + 0x7F9070:
         raise ValueError('Surface API table changed')
+    settings = reader.pointer(engine+0x27C5E48)
+    count = reader.u32(settings+0xF8)
+    if not 0 < count <= 512:
+        raise ValueError('Surface filter bounds changed')
+    rows = reader.read(reader.pointer(settings+0x100),count*4)
+    registered = {int.from_bytes(rows[i:i+4],'little') for i in range(0,len(rows),4)}
+    filters = list(query.filters.values())
+    if any(value not in registered for value in filters):
+        raise ValueError('Required body/geometry filter is not registered')
+    projectile = reader.pointer(game+0x37C7678)
+    if reader.u32(projectile+0xF8) != filters[1]:
+        raise ValueError('Native projectile collision filter changed')
     reader.kernel.VirtualQueryEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                              ctypes.POINTER(Region), ctypes.c_size_t]
     reader.kernel.VirtualQueryEx.restype = ctypes.c_size_t
@@ -70,6 +87,10 @@ def inspect(reader):
         time.sleep(0.05)
     return {'read_only': True, 'game_writes': 0, 'game_function_calls': 0,
             'code_guards': guards, 'api_table_verified': True,
+            'registered_probe_filters': [f'{value:08x}' for value in filters],
+            'native_projectile_filter_verified': True,
+            'body_hits_tested': False,
+            'body_identity_connections_tested': False,
             'physics_world_verified': True, 'idle_samples': sum(row['idle'] for row in samples),
             'sample_count': len(samples), 'samples': samples,
             'surface_hits_tested': False}

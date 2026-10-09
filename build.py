@@ -69,12 +69,13 @@ def main():
                      ROOT / 'tools/read_drone_state.py', ROOT / 'tools/preflight.py',
                      ROOT / 'tools/observe_control.py', ROOT / 'tools/read_pose_sources.py',
                      ROOT / 'tools/check_surface_query.py',
-                     ROOT / 'research/guard-dog-catalog.json']:
+                     ROOT / 'research/guard-dog-catalog.json',
+                     ROOT / 'research/native-body-arc-20261009.json']:
             files['Source/' + path.relative_to(ROOT).as_posix()] = path.read_bytes()
         files['Source/validation.json'] = (json.dumps(report, indent=2) + '\n').encode('ascii')
         files['SHA256SUMS.txt'] = ''.join(hashlib.sha256(value).hexdigest() + '  ' + name + '\n'
                                          for name, value in sorted(files.items())).encode('ascii')
-        path = releases / f'Drone-Remote-Control-0.2.22-private-test-{language}.zip'
+        path = releases / f'Drone-Remote-Control-0.2.27-private-test-{language}.zip'
         with zipfile.ZipFile(path, 'w') as output:
             for name, value in sorted(files.items()):
                 entry = zipfile.ZipInfo(name, (2026, 10, 9, 0, 0, 0))
@@ -92,7 +93,7 @@ def main():
                          'entries': len(files), 'verified': True})
     print(json.dumps({'packages': packages, 'auto_installed': False, 'published': False,
                       'in_game_tested': False, 'remote_control_implemented': True,
-                      'scope': 'five solo Guard Dog backpacks and G-50/G-60 Seekers; not a stable release'}, indent=2))
+                      'scope': 'five Guard Dog families and G-50/G-60; solo default, experimental multiplayer opt-in; not a stable release'}, indent=2))
 
 
 if __name__ == '__main__':

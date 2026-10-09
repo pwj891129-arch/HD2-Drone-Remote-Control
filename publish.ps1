@@ -1,13 +1,13 @@
 param(
     [Parameter(Mandatory)][string]$Commit,
     [string]$Repository = 'pwj891129-arch/HD2-Drone-Remote-Control',
-    [string]$Tag = 'drone-remote-control-0.2.22-test'
+    [string]$Tag = 'drone-remote-control-0.2.27-test'
 )
 $ErrorActionPreference = 'Stop'
 if ($Commit -notmatch '^[0-9a-f]{40}$') { throw 'A full pushed source commit is required.' }
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Invalid repository.' }
-$names = @('Drone-Remote-Control-0.2.22-private-test-EN.zip',
-           'Drone-Remote-Control-0.2.22-private-test-KO.zip')
+$names = @('Drone-Remote-Control-0.2.27-private-test-EN.zip',
+           'Drone-Remote-Control-0.2.27-private-test-KO.zip')
 $assets = @()
 foreach ($name in $names) {
     $path = Join-Path $PSScriptRoot "releases/$name"
@@ -34,7 +34,7 @@ $headers = @{ Authorization = 'Bearer ' + $credential.password;
     Accept = 'application/vnd.github+json'; 'User-Agent' = 'HD2-Drone-Release';
     'X-GitHub-Api-Version' = '2022-11-28' }
 $api = "https://api.github.com/repos/$Repository"
-$notes = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'RELEASE-0.2.22.md') -Raw -Encoding utf8
+$notes = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'RELEASE-0.2.27.md') -Raw -Encoding utf8
 try {
     $remote = Invoke-RestMethod "$api/commits/$Commit" -Headers $headers
     if ($remote.sha -ne $Commit) { throw 'Source commit is not available on GitHub.' }
@@ -42,7 +42,7 @@ try {
     $release = $releases | Where-Object tag_name -eq $Tag | Select-Object -First 1
     if (-not $release) {
         $body = @{ tag_name = $Tag; target_commitish = $Commit;
-            name = 'Drone Remote Control 0.2.22-test (Quick Throw Fix and Explosion Cleanup)';
+            name = 'Drone Remote Control 0.2.27-test (Body Parts and K-9 Readiness)';
             body = $notes; draft = $true; prerelease = $true } | ConvertTo-Json
         $release = Invoke-RestMethod -Method Post "$api/releases" -Headers $headers `
             -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))

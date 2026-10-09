@@ -145,7 +145,9 @@ function channel:float(s,at) local f=ffi.new('float[1]');ffi.copy(f,s:sub(at+1,a
 function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:float(s,at+8)} end
 ''')
         load = lambda name: self.lua.execute((ROOT / 'src' / (name + '.lua')).read_bytes())
-        self.native = load('reader').new(self.lua.globals().channel, load('binary'), load('flight'))
+        self.options = self.lua.table_from({b'allow_multiplayer': False})
+        self.native = load('reader').new(self.lua.globals().channel, load('binary'), load('flight'),
+                                       self.options, load('body_resources'))
         self.families = load('reader').families
 
     def select_family(self, pack_hash):
@@ -199,6 +201,34 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
                 self.assertFalse(sample[b'exhausted'])
                 self.assertTrue(sample[b'unit_valid']())
                 self.assertTrue(sample[b'fire_valid']())
+
+    def test_k9_reads_native_arc_countdown_and_instance_interval(self):
+        self.select_family('c28da712b12e3dfa')
+        reader = self.lua.execute((ROOT/'src/reader.lua').read_bytes())
+        for guard in reader[b'arc_guards'].values():
+            self.memory.put(self.memory.game+guard[1],bytes.fromhex(guard[2].decode()))
+        ptr = lambda at: struct.unpack('<Q',self.memory.read(at,8))[0]
+        gun = ptr(self.memory.game+0x3326CE0)
+        owner = self.memory.read(ptr(ptr(gun+72)),24)
+        manager = self.memory.component(0x3326C10,0x48,0x60,0x70,0x38,owner,
+                                        struct.pack('<4f',0,0,2.5,5)+bytes(24))
+        sample = self.native.snapshot(self.native)
+        arc = sample[b'arc_readiness']
+        self.assertEqual(arc[b'percent'],50)
+        self.assertEqual(arc[b'remaining'],2.5)
+        self.assertFalse(arc[b'ready'])
+        self.assertTrue(sample[b'unit_valid']())
+        self.memory.put(ptr(manager+0x70)+8,struct.pack('<2f',0,2))
+        self.assertTrue(self.native.snapshot(self.native)[b'arc_readiness'][b'ready'])
+
+    def test_k9_optional_readiness_failure_preserves_camera_and_movement_snapshot(self):
+        self.select_family('c28da712b12e3dfa')
+        sample = self.native.snapshot(self.native)
+        self.assertIsNone(sample[b'arc_readiness'])
+        self.assertIsNotNone(sample[b'arc_reason'])
+        self.assertTrue(sample[b'unit_valid']())
+        self.assertTrue(sample[b'fire_valid']())
+        self.assertTrue(sample[b'camera_valid']())
 
     def test_empty_magazine_checks_last_chamber_and_preserves_lease_identity(self):
         self.select_family('255ebc5767d7ceec')
@@ -778,6 +808,50 @@ function channel:vector(s,at) return {self:float(s,at),self:float(s,at+4),self:f
         players = struct.unpack('<Q', self.memory.read(self.memory.game+0x3326468,8))[0]
         self.memory.word(players+132,2)
         self.assertFalse(sample[b'unit_valid']())
+
+    def test_multiplayer_toggle_allows_one_local_player_with_remote_peers(self):
+        players = struct.unpack('<Q', self.memory.read(self.memory.game+0x3326468,8))[0]
+        self.options[b'allow_multiplayer'] = True
+        for total in (2,3,4):
+            with self.subTest(total=total):
+                self.memory.word(players+132,total)
+                sample = self.native.snapshot(self.native)
+                self.assertTrue(sample[b'unit_valid']())
+                self.options[b'allow_multiplayer'] = False
+                self.assertFalse(sample[b'unit_valid']())
+                self.assertTrue(sample[b'camera_valid']())
+                self.assertTrue(sample[b'brain'][b'valid']())
+                self.assertTrue(sample[b'movement'][b'valid']())
+                with self.assertRaisesRegex(Exception,'solo_required'):
+                    self.native.snapshot(self.native)
+                self.options[b'allow_multiplayer'] = True
+                self.assertTrue(sample[b'unit_valid']())
+
+    def test_multiplayer_enabled_preserves_roster_and_own_backpack_guards(self):
+        players = struct.unpack('<Q', self.memory.read(self.memory.game+0x3326468,8))[0]
+        self.options[b'allow_multiplayer'] = True
+        for total,local in ((0,1),(5,1),(0xFFFFFFFF,1),(2,0),(4,2)):
+            with self.subTest(total=total,local=local):
+                self.memory.word(players+132,total)
+                self.memory.word(players+136,local)
+                with self.assertRaisesRegex(Exception,'solo_required'):
+                    self.native.snapshot(self.native)
+        self.memory.word(players+132,4)
+        self.memory.word(players+136,1)
+        sample = self.native.snapshot(self.native)
+        inventory = struct.unpack('<Q',self.memory.read(self.memory.game+0x3326738,8))[0]
+        rows = struct.unpack('<Q',self.memory.read(inventory+80,8))[0]
+        self.memory.word(rows+12,0)
+        self.assertFalse(sample[b'unit_valid']())
+
+    def test_solo_return_recovers_without_enabling_multiplayer(self):
+        players = struct.unpack('<Q',self.memory.read(self.memory.game+0x3326468,8))[0]
+        sample = self.native.snapshot(self.native)
+        self.memory.word(players+132,2)
+        self.assertFalse(sample[b'unit_valid']())
+        self.memory.word(players+132,1)
+        self.assertTrue(sample[b'unit_valid']())
+        self.assertTrue(self.native.snapshot(self.native)[b'unit_valid']())
 
     def test_camera_reused_by_another_actor_is_not_restorable(self):
         sample = self.native.snapshot(self.native)

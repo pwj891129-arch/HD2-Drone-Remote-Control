@@ -97,4 +97,42 @@ local _,_,normal_velocity=Avoidance.step({0,0,0.6},{0,0,-1},
     {{position={0,0,0},normal={0,0,1}}},0.05,{0,0,-1})
 check(normal_velocity[3]>0,'Seeker clearance does not mutate the backpack clearance')
 check(not pcall(Avoidance.step,{0,0,1},{0,0,0},{},0.05,nil,0),'invalid clearance is refused')
+check(Avoidance.body_clearance == 0.01,'one centimetre body clearance is independent of probe size')
+local body = {{position={0,0,0},normal={0,0,1},character_body=true}}
+for _,terrain_margin in ipairs({0.5,1}) do
+    p,command,v = Avoidance.step({0,0,0.01},{1,2,-4},body,0.05,nil,terrain_margin)
+    check(near(v[3],0) and near(v[1],1) and near(v[2],2),'body holds one centimetre for either drone type')
+    p,command,v = Avoidance.step({0,0,0.02},{0,0,-1},body,0.05,nil,terrain_margin)
+    check(v[3] < 0,'body permits approach well inside the terrain margin')
+    p,command,v = Avoidance.step({0,0,0.005},{0,0,-1},body,0.05,nil,terrain_margin)
+    check(v[3] > 0 and v[3] < 0.03,'gentle outward correction starts only inside one centimetre')
+    local leg_gap = {{position={-0.1,0,0},normal={1,0,0},character_body=true},
+        {position={0.1,0,0},normal={-1,0,0},character_body=true}}
+    p,command,v = Avoidance.step({0,0,0},{0,4,0},leg_gap,0.05,nil,terrain_margin)
+    check(near(v[1],0) and near(v[2],4),'leg gaps preserve forward flight with no lateral shove')
+    for _,dt in ipairs({1/30,1/60,1/144,0.1}) do
+        local position,velocity={0,0,1},{0,0,0}
+        for _=1,math.ceil(4/dt) do
+            local _,_,_,_,_,_,_,wanted=Flight.step(position,0,0,
+                {right=0,left=0,forward=0,back=0,up=0,down=1},dt,velocity)
+            position,command,velocity=Avoidance.step(position,wanted,body,dt,velocity,terrain_margin)
+            check(position[3] >= 0.009999,'held descent never crosses the body margin')
+        end
+        check(position[3] < 0.01002,'approach converges to the one-centimetre body margin')
+    end
+end
+local mixed={body[1],{position={0,0,0},normal={0,0,1},character_body=false}}
+p,command,v=Avoidance.step({0,0,0.5},{0,0,-1},mixed,0.05,nil,0.5)
+check(near(v[3],0),'a coincident wall still retains its half-metre margin')
+p,command,v=Avoidance.step({0,0,1},{0,0,-1},mixed,0.05)
+check(near(v[3],0),'backpack terrain clearance remains one metre')
+for _,body_hit in ipairs({false,true}) do
+    local exit={{position={0.2,0,0},normal={1,0,0},character_body=body_hit,recovered=true}}
+    local position,velocity={0,0,0},{0,0,0}
+    for _=1,300 do
+        position,command,velocity=Avoidance.step(position,{0,1,0},exit,0.02,velocity,0.5)
+        check(velocity[1]>=0 and near(velocity[2],1),'initial escape is smooth and retains tangential input')
+    end
+    check(position[1]>0.2+(body_hit and 0.009 or 0.49),'initial terrain/body penetration reaches exit margin')
+end
 return checks
